@@ -1,0 +1,29 @@
+data_root: ./data/weibo2014/processed
+results_root: ./results/weibo2014_gedai_rerun
+dataset_label: weibo2014
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+sampling_rate: 250
+bandpass:
+  l_freq: 8.0
+  h_freq: 30.0
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+permutation:
+  n_subject_level: 1000
+  n_pipeline_level: 10000
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: true
+backbones:
+  use_csp: true
+  use_tangent_space: true
+denoising:
+  use_baseline: false
+  use_icalabel: false
+  use_gedai: true
+signal_integrity:
+  channels_of_interest: ["C3", "C4"]
+  segment_duration_s: 2.0

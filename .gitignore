@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+.cache/
+env/
+venv/
+ENV/
+
+# Data and Results
+data/
+results/
+exports/
+figures/
+*.edf
+*.npz
+*.mat
+
+# Logs and Debug
+*.log
+out.txt
+err.txt
+test_output.txt
+debug_*.py
+test_*.py
+!tests/test_*.py
+
+# Images and Packages
+*.png
+*.jpg
+*.jpeg
+*.zip
+*.tar.gz
+
+# System/IDE
+.DS_Store
+.idea/
+.vscode/
+.gemini/
+.mne_home/
+.mplconfig/
+.home/
+
+# Task-specific cleanup
+gedai_car_edfs_for_tomas/
+gedai_nm6_edfs_for_tomas/
+staging_*/
+GEDAI_Review_Package*.zip
+GEDAI_Subject2_Analysis_Package.zip
+memory_audit.md
+PROJECT_SPEC_STATUS.md
+MEMORY_AUDIT.md

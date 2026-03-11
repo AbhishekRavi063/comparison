@@ -1,0 +1,52 @@
+# Memory-stability test before full 109-subject run (see MEMORY_AUDIT.md).
+#
+# 1. Prepare data for subjects 1–20:
+#    python -m src.data.prepare_physionet_eegbci --subjects $(seq 1 20) --out-root data/physionet_eegbci
+#
+# 2. Run with memory debug and watch RSS (Activity Monitor):
+#    export EEG_MEMORY_DEBUG=1
+#    pip install psutil   # optional, for RAM logging
+#    python -m src.run_full_test config/config_real_physionet_20subjects.yml
+#
+# 3. If RSS is stable (no growth across subjects), run full 109 with config_real_physionet_full.yml.
+#
+# GEDAI is OFF by default; run baseline + ICALabel first, then GEDAI later if needed.
+
+data_root: ./data/physionet_eegbci
+results_root: ./results/physionet_20subjects
+dataset_label: physionet_eegbci_20
+
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 30.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+permutation:
+  n_subject_level: 1000
+  n_pipeline_level: 10000
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: true
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_gedai: false   # set true to run GEDAI later to reduce memory load
+
+signal_integrity:
+  channels_of_interest: ["C3", "C4"]
+  segment_duration_s: 2.0

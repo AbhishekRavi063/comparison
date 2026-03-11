@@ -1,0 +1,38 @@
+# 10-subject config for GEDAI performance evaluation with Common Average Reference
+data_root: data/physionet_eegbci
+results_root: results/physionet_10subjects_gedai_car
+dataset_label: physionet_eegbci_10_gedai_car
+
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+sampling_rate: 160
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 30.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+permutation:
+  n_subject_level: 10
+  n_pipeline_level: 100
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["C3", "C4"]
+  segment_duration_s: 2.0

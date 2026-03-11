@@ -1,0 +1,45 @@
+# Same as config_real_physionet_5subjects.yml but with REDUCED permutations for quick verification.
+# Use this to confirm the pipeline runs end-to-end in ~15–30 min.
+# For the real professor-style evaluation, use config_real_physionet_5subjects.yml (1000 + 10000).
+#
+# Run: python -m src.run_full_test config/config_real_physionet_5subjects_quick.yml
+
+data_root: ./data/physionet_eegbci
+results_root: ./results/physionet_20subjects_quick
+dataset_label: physionet_eegbci_20
+
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 30.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+# Reduced for quick run (~15–30 min for 5 subjects)
+permutation:
+  n_subject_level: 10
+  n_pipeline_level: 100
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: true
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["C3", "C4"]
+  segment_duration_s: 2.0

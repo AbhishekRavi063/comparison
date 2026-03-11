@@ -1,0 +1,55 @@
+# Phase 1 — Small-scale verification (5 subjects), PhysioNet EEGBCI.
+#
+# 1. Prepare data:
+#    python -m src.data.prepare_physionet_eegbci --subjects 1 2 3 4 5 --out-root data/physionet_eegbci
+#
+# 2. Run full evaluation:
+#    python -m src.run_full_test config/config_real_physionet_5subjects.yml
+#
+# Expected runtime: ~2–5+ hours (5 subjects × 3 pipelines × 2 backbones × 1000 null + 10000 between-pipeline).
+# The progress bar updates only after each subject completes — the first subject alone can take 30–60 min.
+# For a quick sanity check (~15–30 min), use config_real_physionet_5subjects_quick.yml instead.
+#
+# Subjects are processed sequentially; memory released after each subject (target <12 GB RAM).
+#
+# GEDAI is OFF by default to reduce memory: run baseline + ICALabel first, then run GEDAI
+# later (set use_gedai: true and re-run, or use a GEDAI-only merge script).
+
+data_root: ./data/physionet_eegbci
+results_root: ./results/physionet_5subjects
+dataset_label: physionet_eegbci_5
+
+subjects: [1, 2, 3, 4, 5]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 30.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+permutation:
+  n_subject_level: 1000
+  n_pipeline_level: 10000
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: true
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_gedai: false   # set true to run GEDAI later (after baseline + ICALabel) to reduce memory
+
+signal_integrity:
+  channels_of_interest: ["C3", "C4"]
+  segment_duration_s: 2.0
