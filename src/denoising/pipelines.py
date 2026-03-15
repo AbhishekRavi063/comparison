@@ -153,9 +153,15 @@ def apply_icalabel(
     no_pos_chs = [ch['ch_name'] for ch in epochs_orig.info['chs'] if np.isnan(ch['loc'][:3]).any()]
     no_pos_idx = [epochs_orig.ch_names.index(c) for c in no_pos_chs]
     if no_pos_chs:
-        if _verbose:
-            print(f"  [ICALabel] dropping {len(no_pos_chs)} channels with no montage pos: {no_pos_chs}")
-        epochs_orig.drop_channels(no_pos_chs)
+        if len(no_pos_chs) == len(ch_names):
+            if _verbose:
+                print("  [ICALabel] all channels lack montage pos; proceeding without dropping.")
+            no_pos_chs = []
+            no_pos_idx = []
+        else:
+            if _verbose:
+                print(f"  [ICALabel] dropping {len(no_pos_chs)} channels with no montage pos: {no_pos_chs}")
+            epochs_orig.drop_channels(no_pos_chs)
 
 
     epochs_orig.set_eeg_reference("average", projection=False, verbose="ERROR")
@@ -163,74 +169,80 @@ def apply_icalabel(
     # ---- 2) Optional notch 50/60 Hz ----
     # Notch skipped for epochs to prevent ringing; already bandpassed afterwards.
 
-    # ---- 3) 1–100 Hz bandpass for ICA/ICLabel (required; removes warning) ----
-    nyq = 0.5 * float(sfreq)
-    ica_high = min(ICA_ICALABEL_HIGH, nyq - 0.5)
-    epochs_for_ica = epochs_orig.copy()
-    epochs_for_ica.filter(l_freq=ICA_ICALABEL_LOW, h_freq=ica_high, n_jobs=1, verbose="ERROR")
+    try:
+        # ---- 3) 1–100 Hz bandpass for ICA/ICLabel (required; removes warning) ----
+        nyq = 0.5 * float(sfreq)
+        ica_high = min(ICA_ICALABEL_HIGH, nyq - 0.5)
+        epochs_for_ica = epochs_orig.copy()
+        epochs_for_ica.filter(l_freq=ICA_ICALABEL_LOW, h_freq=ica_high, n_jobs=1, verbose="ERROR")
 
-    # ---- 4) Fit ICA (extended infomax), rank = n_channels ----
-    n_comp = min(n_channels - 1, ICA_N_COMPONENTS)
-    ica = ICA(
-        n_components=n_comp,
-        random_state=ICA_RANDOM_STATE,
-        max_iter="auto",
-        method="infomax",
-        fit_params={"extended": True},
-    )
-    ica.fit(epochs_for_ica, verbose="ERROR")
+        # ---- 4) Fit ICA (extended infomax), rank = n_channels ----
+        n_comp = min(n_channels - 1, ICA_N_COMPONENTS)
+        ica = ICA(
+            n_components=n_comp,
+            random_state=ICA_RANDOM_STATE,
+            max_iter="auto",
+            method="infomax",
+            fit_params={"extended": True},
+        )
+        ica.fit(epochs_for_ica, verbose="ERROR")
 
-    # ---- 5) ICALabel: same 1–100 Hz Epochs ----
-    labels_dict = label_components(epochs_for_ica, ica, method="iclabel")
-    component_labels = labels_dict.get("labels", [])
-    probs = labels_dict.get("y_pred_proba", None)
+        # ---- 5) ICALabel: same 1–100 Hz Epochs ----
+        labels_dict = label_components(epochs_for_ica, ica, method="iclabel")
+        component_labels = labels_dict.get("labels", [])
+        probs = labels_dict.get("y_pred_proba", None)
 
-    # ---- 6) Reject non-brain: eye, muscle, heart, line_noise, channel_noise with prob > threshold ----
-    exclude_idx = []
-    for idx, lab in enumerate(component_labels):
-        lab_l = str(lab).lower().strip()
-        if lab_l in ("brain", "other"):
-            continue
-        if not any(art in lab_l for art in ICALABEL_ARTIFACT_LABELS):
-            continue
-        conf = 1.0
-        if probs is not None and idx < len(probs):
-            try:
-                conf = float(np.max(np.asarray(probs[idx]).ravel()))
-            except Exception:
-                pass
-        if conf >= ICALABEL_ARTIFACT_THRESHOLD:
-            exclude_idx.append((idx, conf, lab_l))
+        # ---- 6) Reject non-brain: eye, muscle, heart, line_noise, channel_noise with prob > threshold ----
+        exclude_idx = []
+        for idx, lab in enumerate(component_labels):
+            lab_l = str(lab).lower().strip()
+            if lab_l in ("brain", "other"):
+                continue
+            if not any(art in lab_l for art in ICALABEL_ARTIFACT_LABELS):
+                continue
+            conf = 1.0
+            if probs is not None and idx < len(probs):
+                try:
+                    conf = float(np.max(np.asarray(probs[idx]).ravel()))
+                except Exception:
+                    pass
+            if conf >= ICALABEL_ARTIFACT_THRESHOLD:
+                exclude_idx.append((idx, conf, lab_l))
 
-    exclude_idx.sort(key=lambda t: t[1], reverse=True)
-    ica.exclude = [t[0] for t in exclude_idx]
+        exclude_idx.sort(key=lambda t: t[1], reverse=True)
+        ica.exclude = [t[0] for t in exclude_idx]
 
-    if _verbose or len(ica.exclude) == 0:
-        if len(ica.exclude) == 0:
-            import warnings
-            warnings.warn(
-                "ICA+ICALabel: no components excluded (ica.exclude is empty). "
-                "Signal will be unchanged. Check labels/threshold."
-            )
+        if _verbose or len(ica.exclude) == 0:
+            if len(ica.exclude) == 0:
+                import warnings
+                warnings.warn(
+                    "ICA+ICALabel: no components excluded (ica.exclude is empty). "
+                    "Signal will be unchanged. Check labels/threshold."
+                )
+            if _verbose:
+                print("[ICA] Rejected components (idx, prob, label):", ica.exclude)
+                for t in exclude_idx:
+                    print(f"  IC{t[0]}: prob={t[1]:.3f} label={t[2]!r}")
+                print("[ICA] Number rejected:", len(ica.exclude))
+
+        # ---- 7) Apply ICA to original epochs (modifies signal) ----
+        epochs_clean = epochs_orig.copy()
+        ica.apply(epochs_clean, verbose="ERROR")
+
+        # ---- 8) Verification: max difference ----
+        data_orig = epochs_orig.get_data()
+        data_clean = epochs_clean.get_data()
+        max_diff = float(np.max(np.abs(data_clean.astype(np.float64) - data_orig.astype(np.float64))))
         if _verbose:
-            print("[ICA] Rejected components (idx, prob, label):", ica.exclude)
-            for t in exclude_idx:
-                print(f"  IC{t[0]}: prob={t[1]:.3f} label={t[2]!r}")
-            print("[ICA] Number rejected:", len(ica.exclude))
+            print("[ICA] Max |clean - orig|:", max_diff)
 
-    # ---- 7) Apply ICA to original epochs (modifies signal) ----
-    epochs_clean = epochs_orig.copy()
-    ica.apply(epochs_clean, verbose="ERROR")
+        # ---- 9) Use clean data array, bandpass to decode band ----
+        x_clean = epochs_clean.get_data()
 
-    # ---- 8) Verification: max difference ----
-    data_orig = epochs_orig.get_data()
-    data_clean = epochs_clean.get_data()
-    max_diff = float(np.max(np.abs(data_clean.astype(np.float64) - data_orig.astype(np.float64))))
-    if _verbose:
-        print("[ICA] Max |clean - orig|:", max_diff)
-
-    # ---- 9) Use clean data array, bandpass to decode band ----
-    x_clean = epochs_clean.get_data()
+    except Exception as e:
+        import warnings
+        warnings.warn(f"ICA+ICALabel pipeline failed ({e}); falling back to bandpass baseline.")
+        return x_band_ref.astype(np.float32, copy=False)
 
     # Re-insert dropped channels as zeros to match original input shape
     if no_pos_idx:
@@ -243,16 +255,21 @@ def apply_icalabel(
 
     # ---- 10) Over-removal guard: log and revert if alpha drops too much (no silent fallback) ----
     # Evaluate only on the channels kept in the ICA cleaning to avoid zero-division
-    eval_idx = [i for i in range(len(ch_names)) if i not in no_pos_idx] if no_pos_idx else slice(None)
-    alpha_ratio = _median_bandpower_ratio(
-        x_clean[:, eval_idx, :], x_band_ref[:, eval_idx, :], sfreq, ALPHA_BAND[0], ALPHA_BAND[1]
-    )
-    if alpha_ratio < ICALABEL_RETENTION_HARD_MIN:
-        import warnings
-        warnings.warn(
-            f"ICA+ICALabel: alpha retention ratio {alpha_ratio:.3f} < {ICALABEL_RETENTION_HARD_MIN}. "
-            "Reverting to bandpass (no ICA) to avoid over-removal. This is explicitly logged."
+    try:
+        eval_idx = [i for i in range(len(ch_names)) if i not in no_pos_idx] if no_pos_idx else slice(None)
+        alpha_ratio = _median_bandpower_ratio(
+            x_clean[:, eval_idx, :], x_band_ref[:, eval_idx, :], sfreq, ALPHA_BAND[0], ALPHA_BAND[1]
         )
+        if alpha_ratio < ICALABEL_RETENTION_HARD_MIN:
+            import warnings
+            warnings.warn(
+                f"ICA+ICALabel: alpha retention ratio {alpha_ratio:.3f} < {ICALABEL_RETENTION_HARD_MIN}. "
+                "Reverting to bandpass (no ICA) to avoid over-removal. This is explicitly logged."
+            )
+            return x_band_ref.astype(np.float32, copy=False)
+    except Exception as e:
+        import warnings
+        warnings.warn(f"ICA+ICALabel post-processing failed ({e}); falling back to bandpass.")
         return x_band_ref.astype(np.float32, copy=False)
 
     return x_clean.astype(np.float32, copy=False)
@@ -270,6 +287,69 @@ GEDAI_SPECTRAL_LOW_CUTOFF = 2      # Hz — exclude lowest freqs (avoid epoch-le
 # Retention guard — set to 0 (disabled) to avoid passthrough masking results.
 GEDAI_RETENTION_MEDIAN_MIN = 0.0
 GEDAI_RETENTION_HARD_MIN = 0.0
+
+
+def _gedai_leadfield_ch_names(gedai_lib_path: str, n_channels: int) -> List[str]:
+    """Return first n_channels names from GEDAI leadfield .mat for generic-name fallback (e.g. Cho2017 EEG01..)."""
+    import h5py
+    from pathlib import Path
+    root = Path(gedai_lib_path).resolve()
+    mat_path = root / "gedai" / "data" / "fsavLEADFIELD_4_GEDAI.mat"
+    if not mat_path.exists():
+        return []
+    with h5py.File(mat_path, "r") as f:
+        leadfield_data = f["leadfield4GEDAI"]
+        leadfield_channel_data = leadfield_data["electrodes"]
+        names = [
+            f[ref[0]][()].tobytes().decode("utf-16le").lower()
+            for ref in leadfield_channel_data["Name"]
+        ]
+    return names[:n_channels] if len(names) >= n_channels else []
+
+
+def apply_asr(
+    X: np.ndarray,
+    sfreq: float,
+    ch_names: List[str],
+    l_freq: float,
+    h_freq: float,
+) -> np.ndarray:
+    """Apply ASR (Artifact Subspace Reconstruction) using asrpy, then bandpass to decode band.
+
+    Operates on concatenated trials by treating them as one continuous Raw.
+    Falls back to bandpass-only baseline if ASR is unavailable.
+    """
+    try:
+        import mne
+        import asrpy
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        import warnings
+        warnings.warn(
+            f"ASR pipeline requires `mne` and `asrpy`; falling back to bandpass-only ({exc})."
+        )
+        return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+
+    X = np.asarray(X, dtype=np.float32)
+    n_trials, n_channels, n_times = X.shape
+
+    info = mne.create_info(ch_names=list(ch_names), sfreq=float(sfreq), ch_types="eeg")
+    # Concatenate trials along time to approximate continuous data
+    X_concat = X.transpose(1, 0, 2).reshape(n_channels, n_trials * n_times)
+    raw = mne.io.RawArray(X_concat, info, verbose="ERROR")
+
+    # Standard ASR cutoff; this is the main hyperparameter users may want to tune.
+    asr = asrpy.ASR(sfreq=float(sfreq), cutoff=20.0)
+    asr.fit(raw)
+    raw_clean = asr.transform(raw)
+
+    X_clean_concat = raw_clean.get_data().astype(np.float32, copy=False)
+    # Reshape back to (trials, channels, times)
+    X_clean = (
+        X_clean_concat.reshape(n_channels, n_trials, n_times)
+        .transpose(1, 0, 2)
+        .astype(np.float32, copy=False)
+    )
+    return bandpass_filter(X_clean, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
 
 
 def apply_gedai(
@@ -296,6 +376,19 @@ def apply_gedai(
 
     try:
         import mne
+        # Dynamic import to support switching between Bypass and Threshold engines
+        gedai_lib_path = os.environ.get("GEDAI_LIBRARY_PATH", "").strip()
+        if gedai_lib_path:
+            import sys
+            from pathlib import Path
+            lib_abs_path = str(Path(gedai_lib_path).resolve())
+            if lib_abs_path not in sys.path:
+                sys.path.insert(0, lib_abs_path)
+            # Force reload if it was already imported from elsewhere
+            import importlib
+            if 'gedai' in sys.modules:
+                importlib.reload(sys.modules['gedai'])
+        
         from gedai import Gedai
     except ImportError:  # pragma: no cover
         import warnings
@@ -308,11 +401,28 @@ def apply_gedai(
     x_band_ref = bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
     n_trials, n_channels, n_times = X.shape
 
+    # Use standard leadfield names when data has generic names (e.g. Cho2017 EEG01..EEG64)
+    # so GEDAI can match the leadfield; physical order may not match but allows comparison.
+    ch_names_use = list(ch_names)
+    gedai_lib_path = os.environ.get("GEDAI_LIBRARY_PATH", "").strip()
+    if gedai_lib_path and n_channels == 64:
+        generic = all(
+            len(c) >= 4 and c.upper().startswith("EEG") and c[3:].isdigit()
+            for c in ch_names
+        )
+        if generic:
+            try:
+                leadfield_names = _gedai_leadfield_ch_names(gedai_lib_path, n_channels)
+                if leadfield_names:
+                    ch_names_use = leadfield_names
+            except Exception:
+                pass
+
     # Build MNE info with the best available montage for Weibo2014.
     # CB1 (cerebellum) is a custom Weibo electrode absent from all MNE montages
     # including standard_1005. We use 1005 for accurate coords on the other 59
     # channels, then drop CB1 before GEDAI (its leadfield doesn't know CB1).
-    info = mne.create_info(ch_names=list(ch_names), sfreq=sfreq, ch_types="eeg")
+    info = mne.create_info(ch_names=ch_names_use, sfreq=sfreq, ch_types="eeg")
     try:
         montage = mne.channels.make_standard_montage("standard_1005")
         info.set_montage(montage, on_missing="ignore", verbose=False)
@@ -320,9 +430,16 @@ def apply_gedai(
         pass  # montage setting is best-effort
 
     # Drop channels not in any MNE montage (CB1 for Weibo2014).
+    # If ALL channels lack positions (e.g. single-channel EEGdenoiseNet), proceed with all.
     no_pos_chs = [ch['ch_name'] for ch in info['chs'] if np.isnan(ch['loc'][:3]).any()]
     no_pos_idx = [info.ch_names.index(c) for c in no_pos_chs]
-    kept_idx = [i for i in range(len(ch_names)) if i not in no_pos_idx]
+    
+    if len(no_pos_chs) == len(ch_names):
+        no_pos_chs = []
+        no_pos_idx = []
+        kept_idx = list(range(len(ch_names)))
+    else:
+        kept_idx = [i for i in range(len(ch_names)) if i not in no_pos_idx]
 
     X_kept = X[:, kept_idx, :]
     info_kept = mne.pick_info(info, kept_idx)
@@ -330,6 +447,7 @@ def apply_gedai(
 
     X_concat = X_kept.transpose(1, 0, 2).reshape(n_kept_channels, n_trials * n_times)
     raw = mne.io.RawArray(X_concat, info_kept, verbose="ERROR")
+
     # Apply average reference BEFORE GEDAI (required per official tutorial).
     raw.set_eeg_reference("average", projection=False, verbose=False)
 
@@ -398,6 +516,19 @@ def apply_gedai_from_continuous_raw(
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
     try:
+        # Dynamic import to support switching between Bypass and Threshold engines
+        gedai_lib_path = os.environ.get("GEDAI_LIBRARY_PATH", "").strip()
+        if gedai_lib_path:
+            import sys
+            from pathlib import Path
+            lib_abs_path = str(Path(gedai_lib_path).resolve())
+            if lib_abs_path not in sys.path:
+                sys.path.insert(0, lib_abs_path)
+            # Force reload if it was already imported from elsewhere
+            import importlib
+            if 'gedai' in sys.modules:
+                importlib.reload(sys.modules['gedai'])
+
         from gedai import Gedai
     except ImportError:
         import warnings
@@ -492,12 +623,17 @@ def preprocess_subject_data(
 
     Falls back to the old epoch-level GEDAI for non-PhysioNet datasets.
     """
-    if denoising not in {"baseline", "icalabel", "gedai"}:
+    if denoising not in {"baseline", "icalabel", "gedai", "asr"}:
         raise ValueError(f"Unknown denoising strategy: {denoising}")
 
     X_bp = bandpass_filter(X, sfreq, l_freq, h_freq)
     if denoising == "baseline":
         return X_bp.astype(np.float32, copy=False)
+
+    if denoising == "asr":
+        return apply_asr(X, sfreq, ch_names, l_freq, h_freq).astype(
+            np.float32, copy=False
+        )
 
     if denoising == "icalabel":
         return apply_icalabel(X, sfreq, ch_names, l_freq, h_freq).astype(

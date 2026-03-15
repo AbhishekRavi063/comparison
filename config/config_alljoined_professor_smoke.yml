@@ -1,0 +1,49 @@
+# Alljoined-1.6M — Validation Smoke Test (Professor's Fix)
+# Use this to verify the environment on the 24-core machine before the full run.
+#
+# RUN: python3 -m src.run_all --config config/config_alljoined_professor_smoke.yml
+# Expected Runtime: ~15-20 minutes.
+
+data_root: ./data/alljoined/processed
+results_root: ./results/alljoined_professor_validation_smoke
+dataset_label: alljoined_1.6m
+
+# Test only 2 subjects for validation
+subjects: [1, 2]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 1.0
+  h_freq: 40.0
+
+cv:
+  n_splits: 2         # Fast validation
+  shuffle: true
+  random_state: 42
+
+permutation:
+  n_subject_level: 10
+  n_pipeline_level: 100
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: true
+  use_tangent_space: false
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_asr: true
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["Cz", "O1", "O2"]
+  segment_duration_s: 2.0
+
+generate_plots: true
+plot_subjects: [1]

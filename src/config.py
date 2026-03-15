@@ -48,6 +48,8 @@ class DenoisingConfig:
     use_baseline: bool
     use_icalabel: bool
     use_gedai: bool
+    # Optional additional pipelines (e.g. ASR); default False for older configs.
+    use_asr: bool = False
 
 
 @dataclass
@@ -77,6 +79,14 @@ class ExperimentConfig:
         with path.open("r") as f:
             cfg = yaml.safe_load(f)
 
+        denoising_cfg = cfg["denoising"]
+        denoising = DenoisingConfig(
+            use_baseline=denoising_cfg.get("use_baseline", True),
+            use_icalabel=denoising_cfg.get("use_icalabel", False),
+            use_gedai=denoising_cfg.get("use_gedai", False),
+            use_asr=denoising_cfg.get("use_asr", False),
+        )
+
         return cls(
             data_root=Path(cfg["data_root"]),
             results_root=Path(cfg["results_root"]),
@@ -91,7 +101,7 @@ class ExperimentConfig:
                 save_models=cfg["memory"].get("save_models", True),
             ),
             backbones=BackboneConfig(**cfg["backbones"]),
-            denoising=DenoisingConfig(**cfg["denoising"]),
+            denoising=denoising,
             signal_integrity=SignalIntegrityConfig(**cfg["signal_integrity"]),
             dataset_label=cfg.get("dataset_label"),
         )

@@ -16,6 +16,8 @@ class SubjectPerformance:
     mean_accuracy: float
     std_accuracy: float
     p_empirical: float
+    alpha_ratio: float = 1.0
+    beta_ratio: float = 1.0
 
 
 def empirical_chance_p_value(
@@ -88,4 +90,24 @@ def delong_auc_p_value(
         verbose=0
     )
     return float(p_value)
+
+
+def compute_band_power(
+    X: np.ndarray, sfreq: float, lo: float, hi: float, ch_idx: int = 0
+) -> float:
+    """Compute trial-averaged power in [lo, hi] Hz using Welch on a specific channel."""
+    from scipy.signal import welch
+
+    # Trial-average the signal first to get consistent spectral power
+    sig = X[:, ch_idx, :].mean(axis=0)
+    nperseg = min(256, len(sig))
+    f, p = welch(sig, fs=sfreq, nperseg=nperseg)
+    mask = (f >= lo) & (f <= hi)
+    if not np.any(mask):
+        return 0.0
+    # Use np.trapezoid (NumPy 2.0+) if available, else fallback
+    try:
+        return float(np.trapezoid(p[mask], f[mask]))
+    except AttributeError:
+        return float(np.trapz(p[mask], f[mask]))
 

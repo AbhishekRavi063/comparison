@@ -14,6 +14,8 @@ data/
 results/
 exports/
 figures/
+gedai_official/
+gedai_professor_fix/
 *.edf
 *.npz
 *.mat
@@ -46,6 +48,7 @@ test_*.py
 # Task-specific cleanup
 gedai_car_edfs_for_tomas/
 gedai_nm6_edfs_for_tomas/
+alljoined_gedai/
 staging_*/
 GEDAI_Review_Package*.zip
 GEDAI_Subject2_Analysis_Package.zip

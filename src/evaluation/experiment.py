@@ -36,11 +36,16 @@ from ..backbones.tangent_space import (
     fit_tangent_model_preprocessed,
 )
 from ..denoising.pipelines import preprocess_subject_data
+from ..data.dataset_noise_inspection import (
+    plot_denoising_comparison_overlay,
+    plot_denoising_psd_comparison,
+)
 from .metrics import (
     SubjectPerformance,
     empirical_chance_p_value,
     cohen_d_pooled,
     paired_permutation_p_value,
+    compute_band_power,
 )
 
 
@@ -86,6 +91,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
     pipelines = []
     if cfg.denoising.use_baseline:
         pipelines.append("baseline")
+    # ASR (Artifact Subspace Reconstruction) – optional additional denoising pipeline.
+    if getattr(cfg.denoising, "use_asr", False):
+        pipelines.append("asr")
     if cfg.denoising.use_icalabel:
         pipelines.append("icalabel")
     if cfg.denoising.use_gedai:
@@ -137,6 +145,72 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 subject_id=sid if pipeline == "gedai" else None,
                 dataset_name=cfg.dataset_label,
             )
+            
+            # --- Signal Preservation Calculation ---
+            # We use the config's channels_of_interest (first one as primary)
+            # Baseline power is calculated from X_bp (the first pipeline which is usually 'baseline')
+            coi = cfg.signal_integrity.channels_of_interest[0]
+            try:
+                ch_idx = [c.upper() for c in subj_data.ch_names].index(coi.upper())
+            except ValueError:
+                ch_idx = 0
+            
+            alpha_band = (8.0, 12.0)
+            beta_band = (13.0, 30.0)
+            
+            # Record power for this pipeline
+            curr_alpha = compute_band_power(X_proc, subj_data.sfreq, *alpha_band, ch_idx=ch_idx)
+            curr_beta = compute_band_power(X_proc, subj_data.sfreq, *beta_band, ch_idx=ch_idx)
+            
+            if pipeline == "baseline":
+                ref_alpha = curr_alpha if curr_alpha > 0 else 1.0
+                ref_beta = curr_beta if curr_beta > 0 else 1.0
+                alpha_ratio = 1.0
+                beta_ratio = 1.0
+            else:
+                # ref_alpha/ref_beta must have been set by the 'baseline' pass
+                alpha_ratio = curr_alpha / ref_alpha
+                beta_ratio = curr_beta / ref_beta
+
+            # --- Automated Plots (Subject 1 only or if configured) ---
+            if sid == cfg.subjects[0]:
+                plots_dir = results_root / "plots"
+                plots_dir.mkdir(parents=True, exist_ok=True)
+                
+                # PSD Comparison
+                psd_out = plots_dir / f"sub{sid}_{pipeline}_psd_comparison.png"
+                # We need X_bp as the reference "In"
+                # But X_proc is the current pipeline's "Out"
+                # To make this clean, we'd need to keep X_baseline around or re-run bandpass.
+                # However, X_proc for 'baseline' IS the bandpass.
+                if pipeline == "baseline":
+                    # Store baseline for comparison with future pipelines
+                    X_baseline_ref = X_proc.copy()
+                else:
+                    # Plot current vs baseline
+                    plot_denoising_psd_comparison(
+                        X_in=X_baseline_ref,
+                        X_out=X_proc,
+                        sfreq=subj_data.sfreq,
+                        out_path=psd_out,
+                        subject_id=sid,
+                        pipeline_name=pipeline
+                    )
+                    
+                    # Time Domain Overlay
+                    overlay_out = plots_dir / f"sub{sid}_{pipeline}_overlay_comparison.png"
+                    plot_denoising_comparison_overlay(
+                        X_in=X_baseline_ref,
+                        X_out=X_proc,
+                        sfreq=subj_data.sfreq,
+                        ch_names=subj_data.ch_names,
+                        out_path=overlay_out,
+                        subject_id=sid,
+                        pipeline_name=pipeline,
+                        n_channels=5,
+                        trial_idx=0
+                    )
+
             tangent_fold_features = None
 
             for backbone in backbones:
@@ -228,6 +302,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         mean_accuracy=mean_acc,
                         std_accuracy=std_acc,
                         p_empirical=p_emp,
+                        alpha_ratio=alpha_ratio,
+                        beta_ratio=beta_ratio,
                     )
                 )
                 del null_acc
@@ -294,6 +370,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     "mean_accuracy": sp.mean_accuracy,
                     "std_accuracy": sp.std_accuracy,
                     "p_empirical": sp.p_empirical,
+                    "alpha_ratio": sp.alpha_ratio,
+                    "beta_ratio": sp.beta_ratio,
                 }
             )
     df_subject = pd.DataFrame(rows)

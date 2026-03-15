@@ -1,0 +1,55 @@
+# Alljoined-1.6M — Pre-print Benchmark (Professor's Fix)
+# This is the "Gold Standard" run for the 24-core NVIDIA workstation.
+# Runtime: ~6-10 hours on 24 cores.
+#
+# RUN: python3 -m src.run_all --config config/config_alljoined_preprint_full.yml
+#
+# USES: gedai_professor_fix (High-ceiling alpha thresholds + pinv stability)
+
+data_root: ./data/alljoined/processed
+results_root: ./results/alljoined_full_preprint
+dataset_label: alljoined_1.6m
+
+# The Full Sample
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 1.0        # Professor's recommended range for extreme noise
+  h_freq: 40.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+# Pre-print Quality Permutation Tests
+permutation:
+  n_subject_level: 1000
+  n_pipeline_level: 10000
+
+memory:
+  float_dtype: float32
+  n_jobs: 1          # Keep 1 to respect 16GB RAM; GEDAI uses internal parallelization
+  save_models: true
+
+# Compare all methods
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_asr: true
+  use_gedai: true
+
+# Automated Scientific Reporting
+signal_integrity:
+  channels_of_interest: ["Cz", "O1", "O2", "C3", "C4"] # Key Motor/Alpha regions
+  segment_duration_s: 2.0
+
+# Automatic Visualizations (Enabled by default in experiment.py but explicitly mentioned here)
+generate_plots: true
+plot_subjects: [1, 2, 3]  # Generate detailed before/after plots for these subjects

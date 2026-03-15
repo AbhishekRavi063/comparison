@@ -1,1 +1,0 @@
-from .compare import plot_mne_style_overlay_interactive

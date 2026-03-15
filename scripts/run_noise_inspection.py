@@ -73,6 +73,36 @@ DATASETS = {
         "n_subjects_full": 9,
         "prepare_module": "src.data.prepare_bnci2014_001_for_noise",
     },
+    "weibo2014": {
+        "label": "Weibo2014 (MI)",
+        "moabb_cls": "Weibo2014",
+        "processed_dir": PROJECT_ROOT / "data" / "weibo2014" / "processed",
+        "raw_dir": PROJECT_ROOT / "data" / "weibo2014" / "raw",
+        "sfreq_orig": 200,
+        "n_ch": 60,
+        "n_subjects_full": 10,
+        "prepare_module": "src.data.prepare_weibo2014",
+    },
+    "eeg_denoise_net": {
+        "label": "EEGdenoiseNet (EOG Contaminated)",
+        "moabb_cls": None,
+        "processed_dir": PROJECT_ROOT / "data" / "eeg_denoise_net" / "processed",
+        "raw_dir": PROJECT_ROOT / "data" / "eeg_denoise_net" / "raw",
+        "sfreq_orig": 256,
+        "n_ch": 1,
+        "n_subjects_full": 8,
+        "prepare_module": "src.data.prepare_eeg_denoise_net",
+    },
+    "alljoined": {
+        "label": "Alljoined-1.6M (Consumer EEG)",
+        "moabb_cls": None,
+        "processed_dir": PROJECT_ROOT / "data" / "alljoined" / "processed",
+        "raw_dir": PROJECT_ROOT / "data" / "alljoined" / "raw",
+        "sfreq_orig": 256,
+        "n_ch": 32,
+        "n_subjects_full": 20,
+        "prepare_module": "src.data.prepare_alljoined",
+    },
 }
 
 

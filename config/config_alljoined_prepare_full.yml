@@ -1,0 +1,8 @@
+# Alljoined-1.6M — Full Benchmark Preparation
+# Used to download and preprocess the entire 10-subject sample from Hugging Face.
+#
+# RUN: python3 src/data/prepare_alljoined.py --subjects 1 2 3 4 5 6 7 8 9 10 --max-edfs 5
+
+data_root: ./data/alljoined/processed
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+max_edfs_per_subject: 5  # Increase for higher statistical power if disk space allows

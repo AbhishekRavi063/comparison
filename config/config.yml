@@ -32,6 +32,7 @@ denoising:
   use_baseline: true
   use_icalabel: false
   use_gedai: false
+  use_asr: false
 
 signal_integrity:
   channels_of_interest: ["C3", "C4"]
