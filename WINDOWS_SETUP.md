@@ -29,8 +29,24 @@ pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib
 pip install -e ./gedai_professor_fix
 ```
 
-## 3. High-Performance Settings
-Windows often "throttles" the CPU to save power. To use all 24 cores:
+## 3. High-Performance Settings & Stability (Crucial)
+
+Windows often "throttles" the CPU or crashes when RAM hits 16GB. To make the machine stable:
+
+### A. Expand Virtual Memory (Faux-RAM)
+This prevents `ArrayMemoryError` by using the SSD as "Emergency RAM".
+1.  Open the **Start Menu**, type `performance`, and select **"Adjust the appearance and performance of Windows"**.
+2.  Go to the **Advanced** tab.
+3.  Under **Virtual memory**, click **Change...**
+4.  **Uncheck** "Automatically manage paging file size for all drives".
+5.  Select your **C:** drive.
+6.  Select **"Custom size"**:
+    *   **Initial size (MB)**: `32768` (32 GB)
+    *   **Maximum size (MB)**: `65536` (64 GB)
+7.  Click **Set**, then **OK**, then **Apply**.
+8.  **Restart the computer** for changes to take effect.
+
+### B. Power Plan
 1.  Search for **"Power Plan"** in the Windows Start menu.
 2.  Choose **"High Performance"** or **"Ultimate Performance"**.
 
