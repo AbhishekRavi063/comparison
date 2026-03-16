@@ -38,13 +38,23 @@ def _butter_bandpass(
 
 
 def bandpass_filter(
-    X: np.ndarray, sfreq: float, l_freq: float, h_freq: float
+    X: np.ndarray, sfreq: float, l_freq: float, h_freq: float, chunk_size: int = 5000
 ) -> np.ndarray:
-    """Bandpass filter trials (float32 for memory-constrained runs)."""
+    """Bandpass filter trials. Uses chunking to prevent memory peaks on 16GB RAM."""
     X = np.asarray(X, dtype=np.float32)
     b, a = _butter_bandpass(l_freq, h_freq, sfreq)
-    X_filt = filtfilt(b, a, X, axis=-1)
-    return X_filt.astype(np.float32, copy=False)
+    
+    n_trials = X.shape[0]
+    if n_trials <= chunk_size:
+        return filtfilt(b, a, X, axis=-1).astype(np.float32, copy=False)
+
+    # Process in chunks to avoid float64 upcasting spikes
+    X_out = np.empty_like(X)
+    for i in range(0, n_trials, chunk_size):
+        end = min(i + chunk_size, n_trials)
+        X_out[i:end] = filtfilt(b, a, X[i:end], axis=-1).astype(np.float32, copy=False)
+    
+    return X_out
 
 
 def _median_bandpower_ratio(
@@ -144,7 +154,7 @@ def apply_icalabel(
 
     # ---- 1) Build Epochs, set reference, montage ----
     info = mne.create_info(ch_names=ch_names, sfreq=float(sfreq), ch_types="eeg")
-    epochs_orig = mne.EpochsArray(X.copy(), info, verbose="ERROR")
+    epochs_orig = mne.EpochsArray(X, info, verbose="ERROR")
     epochs_orig.set_montage("standard_1020", on_missing="ignore", verbose="ERROR")
 
     # Drop channels with no montage position (e.g. Weibo2014's CB1 cerebellum channel).
@@ -232,7 +242,8 @@ def apply_icalabel(
         # ---- 8) Verification: max difference ----
         data_orig = epochs_orig.get_data()
         data_clean = epochs_clean.get_data()
-        max_diff = float(np.max(np.abs(data_clean.astype(np.float64) - data_orig.astype(np.float64))))
+        # Use float32 for difference check to save 50% memory on large trial sets
+        max_diff = float(np.max(np.abs(data_clean.astype(np.float32) - data_orig.astype(np.float32))))
         if _verbose:
             print("[ICA] Max |clean - orig|:", max_diff)
 
