@@ -63,23 +63,43 @@ def _median_bandpower_ratio(
     sfreq: float,
     lo: float,
     hi: float,
+    chunk_size: int = 10000,
 ) -> float:
     """Median clean/reference band-power ratio across trials and channels."""
+    n_trials = x_clean.shape[0]
+    ratios: List[np.ndarray] = []
     nperseg = int(min(256, x_clean.shape[-1]))
-    f, p_clean = welch(x_clean, fs=sfreq, nperseg=nperseg, axis=-1)
-    _, p_ref = welch(x_ref, fs=sfreq, nperseg=nperseg, axis=-1)
-    m = (f >= lo) & (f <= hi)
-    if not np.any(m):
+    
+    for i in range(0, n_trials, chunk_size):
+        end = min(i + chunk_size, n_trials)
+        # Process in chunks: welch creates internal float64 copies
+        f, p_clean = welch(x_clean[i:end], fs=sfreq, nperseg=nperseg, axis=-1)
+        _, p_ref = welch(x_ref[i:end], fs=sfreq, nperseg=nperseg, axis=-1)
+        
+        m = (f >= lo) & (f <= hi)
+        if not np.any(m):
+            continue
+            
+        try:
+            # np.trapezoid (Numpy 2.0+) or np.trapz
+            bp_clean = np.trapezoid(p_clean[..., m], f[m], axis=-1)
+            bp_ref = np.trapezoid(p_ref[..., m], f[m], axis=-1)
+        except AttributeError:
+            bp_clean = np.trapz(p_clean[..., m], f[m], axis=-1)
+            bp_ref = np.trapz(p_ref[..., m], f[m], axis=-1)
+            
+        chunk_ratio = np.divide(
+            bp_clean,
+            np.maximum(bp_ref, 1e-20),
+            out=np.ones_like(bp_clean, dtype=np.float32),
+            where=bp_ref > 1e-20,
+        )
+        ratios.append(chunk_ratio.ravel())
+        del p_clean, p_ref, bp_clean, bp_ref
+        
+    if not ratios:
         return 1.0
-    bp_clean = np.trapezoid(p_clean[..., m], f[m], axis=-1)
-    bp_ref = np.trapezoid(p_ref[..., m], f[m], axis=-1)
-    ratio = np.divide(
-        bp_clean,
-        np.maximum(bp_ref, 1e-20),
-        out=np.ones_like(bp_clean, dtype=np.float32),
-        where=bp_ref > 1e-20,
-    )
-    return float(np.median(ratio))
+    return float(np.median(np.concatenate(ratios)))
 
 
 def _retention_ratios(
@@ -248,7 +268,12 @@ def apply_icalabel(
             print("[ICA] Max |clean - orig|:", max_diff)
 
         # ---- 9) Use clean data array, bandpass to decode band ----
-        x_clean = epochs_clean.get_data()
+        x_clean = data_clean # use the array we already extracted
+        
+        # Aggressive cleanup of heavy objects (~5-10GB RAM)
+        del epochs_orig, epochs_clean, ica, data_orig, data_clean
+        import gc
+        gc.collect()
 
     except Exception as e:
         import warnings
@@ -456,8 +481,12 @@ def apply_gedai(
     info_kept = mne.pick_info(info, kept_idx)
     n_kept_channels = len(kept_idx)
 
-    X_concat = X_kept.transpose(1, 0, 2).reshape(n_kept_channels, n_trials * n_times)
+    import gc
+    gc.collect()
+    X_concat = X_kept.transpose(1, 0, 2).reshape(n_kept_channels, n_trials * n_times).astype(np.float32)
     raw = mne.io.RawArray(X_concat, info_kept, verbose="ERROR")
+    del X_concat
+    gc.collect()
 
     # Apply average reference BEFORE GEDAI (required per official tutorial).
     raw.set_eeg_reference("average", projection=False, verbose=False)
@@ -471,7 +500,7 @@ def apply_gedai(
             n_jobs=GEDAI_N_JOBS,
             verbose=False,
         )
-        raw_broad_clean = gedai_broad.transform_raw(raw, n_jobs=GEDAI_N_JOBS, verbose=False)
+        raw_broad_clean = gedai_broad.transform_raw(raw, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False)
 
         # ── Step 2: Spectral GEDAI (frequency-specific) ─────────────────────
         gedai_spectral = Gedai(
@@ -486,7 +515,7 @@ def apply_gedai(
             verbose=False,
         )
         raw_clean = gedai_spectral.transform_raw(
-            raw_broad_clean, n_jobs=GEDAI_N_JOBS, verbose=False
+            raw_broad_clean, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False
         )
 
     except Exception as e:
