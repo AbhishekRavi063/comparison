@@ -10,8 +10,8 @@ data_root: ./data/alljoined/processed
 results_root: ./results/alljoined_full_preprint
 dataset_label: alljoined_1.6m
 
-# The Full Sample
-subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+# The Full Sample (All 20 Subjects)
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 
 sampling_rate: 250
 
@@ -42,7 +42,7 @@ backbones:
 denoising:
   use_baseline: true
   use_icalabel: true
-  use_asr: true
+  use_asr: false
   use_gedai: true
 
 # Automated Scientific Reporting
