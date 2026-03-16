@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+"""
+Prepare Alljoined-1.6M (consumer EEG) dataset subset.
+
+Downloads from Hugging Face:
+- Raw EDF files (32 channels, 256 Hz)
+- Stimulus metadata (Parquet)
+
+Processes each subject by:
+1. Identifying sessions and blocks.
+2. Aligning EDF annotations with stimulus metadata.
+3. Pulse-epoching (100ms images at 256Hz).
+4. Saving to data/alljoined/processed/subject_<ID>.npz.
+
+Usage:
+    python3 src/data/prepare_alljoined.py --subjects 1 2 --out-root data/alljoined/processed
+"""
+
+import argparse
+import gc
+import os
+import re
+from pathlib import Path
+from typing import List, Dict
+
+import numpy as np
+import pandas as pd
+import mne
+from huggingface_hub import hf_hub_download, list_repo_files
+
+REPO_ID = "Alljoined/Alljoined-1.6M"
+TARGET_SFREQ = 250.0  # Consistency with other pipelines
+EEG_CHANNELS = [
+    'Cz', 'FCz', 'Afz', 'Fp1', 'F5', 'F1', 'CP5', 'CP3', 'CP1', 'P1', 
+    'P3', 'P5', 'P7', 'PO7', 'PO3', 'O1', 'Pz', 'POz', 'Oz', 'O2', 
+    'PO4', 'PO8', 'P8', 'P6', 'P4', 'P2', 'CP2', 'CP4', 'CP6', 'F2', 'F6', 'Fp2'
+]
+
+def download_subject_data(subject: int, max_edfs: int = None) -> tuple[List[str], str]:
+    """Download EDF files and metadata for a subject. Returns local paths."""
+    print(f"  Listing files for Subject {subject}...", flush=True)
+    all_files = list_repo_files(REPO_ID, repo_type="dataset")
+    
+    # Raw EDFs
+    subj_str = f"sub-{subject:02d}"
+    edf_files = [f for f in all_files if subj_str in f and f.endswith(".edf")]
+    if max_edfs:
+        edf_files = edf_files[:max_edfs]
+    
+    print(f"  Found {len(edf_files)} EDF files to process. Downloading...", flush=True)
+    
+    local_edfs = []
+    for f in edf_files:
+        path = hf_hub_download(repo_id=REPO_ID, filename=f, repo_type="dataset")
+        local_edfs.append(path)
+        
+    # Metadata
+    meta_file = f"preprocessed_eeg/{subj_str}/experiment_metadata_categories.parquet"
+    print(f"  Downloading metadata: {meta_file}...", flush=True)
+    meta_path = hf_hub_download(repo_id=REPO_ID, filename=meta_file, repo_type="dataset")
+    
+    return local_edfs, meta_path
+
+def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root: Path):
+    """Epochs data for a single subject and saves to NPZ."""
+    df_meta = pd.read_parquet(meta_path)
+    # Extract image_id from image_path (e.g. /.../16641.jpg -> 16641)
+    df_meta['image_id_val'] = df_meta['image_path'].apply(
+        lambda x: int(Path(x).stem) if pd.notnull(x) else -1
+    )
+    
+    all_X = []
+    all_y = []
+    
+    # 1 second for a healthy chunk
+    tmin, tmax = 0.0, 1.0 
+    
+    print(f"  Epoching Subject {subject}...", flush=True)
+    
+    for edf_path in edf_paths:
+        try:
+            raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
+        except Exception as e:
+            print(f"    [Skip] Error reading {Path(edf_path).name}: {e}")
+            continue
+            
+        raw.pick_channels([c for c in EEG_CHANNELS if c in raw.ch_names])
+        
+        # Resample to 250Hz immediately to save memory
+        if abs(raw.info['sfreq'] - TARGET_SFREQ) > 0.1:
+            raw.resample(TARGET_SFREQ, verbose=False)
+        
+        # Parse annotations: "partition, image_id, sequence_id, sequence_image_id"
+        annots = raw.annotations
+        matches_found = 0
+        for i, ann in enumerate(annots):
+            desc = ann['description']
+            if not desc.startswith("stim_"):
+                continue
+            
+            parts = [p.strip() for p in desc.split(",")]
+            if len(parts) < 2:
+                continue
+            
+            # The second part is image_id (e.g. 16558)
+            try:
+                ann_image_id = int(parts[1])
+            except ValueError:
+                continue
+            
+            onset = ann['onset']
+            
+            # Find matching metadata row based on image_id
+            match = df_meta[df_meta['image_id_val'] == ann_image_id]
+            
+            if match.empty:
+                continue
+                
+            label = match.iloc[0]['category_num']
+            
+            start_samp = raw.time_as_index(onset)[0]
+            stop_samp = raw.time_as_index(onset + tmax)[0]
+            
+            if start_samp < 0 or stop_samp > raw.n_times:
+                continue
+                
+            chunk = raw.get_data(start=start_samp, stop=stop_samp)
+            if chunk.shape[1] < int(tmax * TARGET_SFREQ):
+                continue
+            
+            all_X.append(chunk)
+            all_y.append(label)
+            matches_found += 1
+            
+        print(f"    Processed {Path(edf_path).name}: {matches_found} matches.", flush=True)
+        raw.close()
+        del raw
+        gc.collect()
+
+    if not all_X:
+        print(f"  [Error] No trials found for Subject {subject}.")
+        return
+
+    X = np.stack(all_X).astype("float32")
+    y = np.array(all_y, dtype=int)
+    
+    out_path = out_root / f"subject_{subject}.npz"
+    np.savez(
+        out_path,
+        X=X,
+        y=y,
+        sfreq=TARGET_SFREQ,
+        ch_names=np.array(EEG_CHANNELS, dtype=object)
+    )
+    
+    print(f"  ✓ Saved {len(all_y)} trials to {out_path}")
+    return {
+        "subject": subject,
+        "n_trials": len(all_y),
+        "n_channels": X.shape[1],
+        "n_times": X.shape[2],
+        "sfreq": TARGET_SFREQ
+    }
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--subjects", type=int, nargs="+", default=[1])
+    parser.add_argument("--out-root", type=str, default="data/alljoined/processed")
+    args = parser.parse_args()
+    
+    out_root = Path(args.out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+    
+def _prepare_subject(subject: int, out_root: Path, max_edfs: int = 2) -> dict:
+    """Download and process a subject for the inspection/benchmark suite."""
+    edf_paths, meta_path = download_subject_data(subject, max_edfs=max_edfs)
+    return process_subject(subject, edf_paths, meta_path, out_root)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--subjects", type=int, nargs="+", default=[1])
+    parser.add_argument("--out-root", type=str, default="data/alljoined/processed")
+    parser.add_argument("--max-edfs", type=int, default=2)
+    args = parser.parse_args()
+    
+    out_root = Path(args.out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+    
+    for subj in args.subjects:
+        print(f"Preparing Alljoined Subject {subj}...")
+        try:
+            info = _prepare_subject(subj, out_root, max_edfs=args.max_edfs)
+            print(f"  ✓ {info}")
+        except Exception as e:
+            print(f"  [Failed] Subject {subj}: {e}")
+
+if __name__ == "__main__":
+    main()
