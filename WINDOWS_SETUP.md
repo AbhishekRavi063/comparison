@@ -25,7 +25,7 @@ python -m venv .venv
 .\.venv\Scripts\activate
 
 # 4. Install dependencies
-pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib click scipy psutil asrpy
+pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib click scipy psutil asrpy requests huggingface_hub pyarrow mne-icalabel torch
 pip install -e ./gedai_professor_fix
 ```
 
