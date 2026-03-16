@@ -163,15 +163,6 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
         "sfreq": TARGET_SFREQ
     }
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--subjects", type=int, nargs="+", default=[1])
-    parser.add_argument("--out-root", type=str, default="data/alljoined/processed")
-    args = parser.parse_args()
-    
-    out_root = Path(args.out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
-    
 def _prepare_subject(subject: int, out_root: Path, max_edfs: int = 2) -> dict:
     """Download and process a subject for the inspection/benchmark suite."""
     edf_paths, meta_path = download_subject_data(subject, max_edfs=max_edfs)
@@ -182,16 +173,23 @@ def main():
     parser.add_argument("--subjects", type=int, nargs="+", default=[1])
     parser.add_argument("--out-root", type=str, default="data/alljoined/processed")
     parser.add_argument("--max-edfs", type=int, default=2)
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing processed files")
     args = parser.parse_args()
     
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     
     for subj in args.subjects:
+        out_path = out_root / f"subject_{subj}.npz"
+        if out_path.exists() and not args.overwrite:
+            print(f"Skipping Subject {subj} (already exists). Use --overwrite to re-process.")
+            continue
+            
         print(f"Preparing Alljoined Subject {subj}...")
         try:
             info = _prepare_subject(subj, out_root, max_edfs=args.max_edfs)
-            print(f"  ✓ {info}")
+            if info:
+                print(f"  ✓ {info}")
         except Exception as e:
             print(f"  [Failed] Subject {subj}: {e}")
 
