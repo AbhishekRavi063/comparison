@@ -46,9 +46,25 @@ This prevents `ArrayMemoryError` by using the SSD as "Emergency RAM".
 7.  Click **Set**, then **OK**, then **Apply**.
 8.  **Restart the computer** for changes to take effect.
 
-### B. Power Plan
-1.  Search for **"Power Plan"** in the Windows Start menu.
-2.  Choose **"High Performance"** or **"Ultimate Performance"**.
+### C. Subject Partitioning (Long-Run Stability)
+For the 20-subject "Gold Standard" run, it is safer to run in batches of 5. This clears the memory cache between each block.
+
+1.  **Batch 1 (Subjects 1-5)**:
+    ```powershell
+    python -m src.run_all --config config/config_alljoined_preprint_full.yml --subjects 1 2 3 4 5
+    ```
+2.  **Batch 2 (Subjects 6-10)**:
+    ```powershell
+    python -m src.run_all --config config/config_alljoined_preprint_full.yml --subjects 6 7 8 9 10
+    ```
+3.  **Batch 3 (Subjects 11-15)**:
+    ```powershell
+    python -m src.run_all --config config/config_alljoined_preprint_full.yml --subjects 11 12 13 14 15
+    ```
+4.  **Batch 4 (Subjects 16-20)**:
+    ```powershell
+    python -m src.run_all --config config/config_alljoined_preprint_full.yml --subjects 16 17 18 19 20
+    ```
 
 ## 4. Running the Benchmark
 Use the two "Pre-print" configurations we prepared:

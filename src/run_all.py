@@ -22,12 +22,22 @@ def main() -> None:
         type=int,
         default=None,
         metavar="N",
-        help="Override number of subjects: use subjects 1..N (e.g. --n-subjects 10 for first 10).",
+        help="Override: use first N subjects.",
+    )
+    parser.add_argument(
+        "--subjects",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Override: use specific subject IDs (e.g. --subjects 6 7 8 9 10).",
     )
     args = parser.parse_args()
 
     cfg = ExperimentConfig.from_yaml(args.config)
-    if args.n_subjects is not None:
+    
+    if args.subjects is not None:
+        cfg.subjects = list(args.subjects)
+    elif args.n_subjects is not None:
         n = int(args.n_subjects)
         if n < 1:
             raise SystemExit("--n-subjects must be >= 1")
