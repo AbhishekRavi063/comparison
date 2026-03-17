@@ -16,6 +16,8 @@ ENV/
 /figures/
 # gedai_official/ (Un-ignored for Windows stability)
 # gedai_professor_fix/ (Un-ignored for Windows stability)
+!gedai_official/**/*.mat
+!gedai_professor_fix/**/*.mat
 *.edf
 *.npz
 *.mat
