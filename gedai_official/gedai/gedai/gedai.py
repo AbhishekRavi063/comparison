@@ -176,9 +176,20 @@ class Gedai:
         check_type(noise_multiplier, (float,), "noise_multiplier")
         n_jobs = _check_n_jobs(n_jobs)
 
-        mat = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "../data/fsavLEADFIELD_4_GEDAI.mat")
-        )
+        # Robust path resolution for Windows
+        from pathlib import Path
+        mat_path = Path(__file__).resolve().parent.parent / "data" / "fsavLEADFIELD_4_GEDAI.mat"
+        mat = str(mat_path.absolute())
+        
+        if not mat_path.exists():
+            # Try a fallback if things are nested differently
+            fallback_path = Path.cwd() / "gedai_official" / "gedai" / "data" / "fsavLEADFIELD_4_GEDAI.mat"
+            if fallback_path.exists():
+                mat = str(fallback_path.absolute())
+            else:
+                logger.error(f"GEDAI Leadfield not found at: {mat}")
+                logger.error(f"Current Working Directory: {os.getcwd()}")
+
         reference_cov, ch_names = _compute_refcov(epochs, mat)
 
         # Tikhonov Regularization based on average diagonal power
