@@ -37,7 +37,7 @@ backbones:
 
 denoising:
   use_baseline: true
-  use_icalabel: true
+  use_icalabel: false
   use_asr: false
   use_gedai: true
 

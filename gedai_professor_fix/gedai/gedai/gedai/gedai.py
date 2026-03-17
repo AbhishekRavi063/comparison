@@ -106,8 +106,7 @@ def _check_sensai_method(method):
     check_type(method, (str,), "method")
     if method not in ["gridsearch", "optimize"]:
         raise ValueError(
-            "Method must be either 'gridsearch' or 'optimize', "
-            f"got '{method}' instead."
+            f"Method must be either 'gridsearch' or 'optimize', got '{method}' instead."
         )
 
 
@@ -122,7 +121,15 @@ def _check_reference_cov(reference_cov):
 
 @fill_doc
 class Gedai:
-    r"""Generalized Eigenvalue De-Artifacting Instrument (GEDAI).
+    """Generalized Eigenvalue De-Artifacting Instrument (GEDAI).
+
+    See :footcite:`Ros2025`.
+
+    .. warning::
+        For EEG channels, Gedai will set average reference internally
+        to match the leadfield covariance reference.
+        Gedai will not modify the input data in-place, but will create
+        copies when necessary to ensure the original data remains unchanged.
 
     Parameters
     ----------
@@ -134,7 +141,7 @@ class Gedai:
         If 0 (default), no wavelet decomposition is performed.
         See :py:func:`pywt.wavedec` more details.
     wavelet_low_cutoff : float | None
-        If ``float``, zero out all wavelet levels (i.e frequency bands) whose upper 
+        If ``float``, zero out all wavelet levels (i.e frequency bands) whose upper
         frequency bound is below this cutoff frequency (in Hz).
         If ``None``, no frequency band is zeroed out. The default is ``None``.
 
@@ -176,22 +183,16 @@ class Gedai:
         check_type(noise_multiplier, (float,), "noise_multiplier")
         n_jobs = _check_n_jobs(n_jobs)
 
+        # Set average reference
+        logger.info("Setting average reference.")
+        epochs = epochs.copy()
+        epochs.load_data()
+        epochs.set_eeg_reference("average", projection=False)
+
         mat = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "../data/fsavLEADFIELD_4_GEDAI.mat")
         )
-
-        # Average referencing for EEG if using leadfield
-        epochs_to_fit = epochs
-        if reference_cov == "leadfield":
-            # Check if EEG channels are present
-            eeg_picks = mne.pick_types(epochs.info, eeg=True)
-            if len(eeg_picks) > 0:
-                # Check if already average referenced (crude check: mean of data)
-                # Or we just always apply it to be safe, like in Matlab
-                logger.info("Applying average referencing for EEG data before GEDAI")
-                epochs_to_fit = epochs.copy().set_eeg_reference("average", verbose=False)
-
-        reference_cov, ch_names = _compute_refcov(epochs_to_fit, mat)
+        reference_cov, ch_names = _compute_refcov(epochs, mat)
 
         # Tikhonov Regularization based on average diagonal power
         avg_diag_power = np.trace(reference_cov) / reference_cov.shape[0]
@@ -223,12 +224,15 @@ class Gedai:
                 wavelet_epochs_data, epochs.info, tmin=epochs.tmin, verbose=False
             )
             min_sensai_threshold, max_sensai_threshold, step = 0, 12, 0.1
-            
+
             # Extend minThreshold for alpha range (7-13 Hz)
             center_freq = (fmin + fmax) / 2
             if 7 <= center_freq <= 13:
                 min_sensai_threshold = -6
-                logger.info(f"Alpha range detected ({fmin:.1f}-{fmax:.1f} Hz): extending minThreshold to {min_sensai_threshold}")
+                logger.info(
+                    f"Alpha range detected ({fmin:.1f}-{fmax:.1f} Hz):"
+                    f" extending minThreshold to {min_sensai_threshold}"
+                )
 
             n_pc = 3
             if sensai_method == "gridsearch":
@@ -398,6 +402,12 @@ class Gedai:
         check_type(epochs, (BaseEpochs,), "epochs")
         n_jobs = _check_n_jobs(n_jobs)
 
+        # Set average reference
+        logger.info("Setting average reference to match leadfield covariance.")
+        epochs = epochs.copy()
+        epochs.load_data()
+        epochs.set_eeg_reference("average", projection=False)
+
         # Check if model was fitted
         if not hasattr(self, "wavelets_fits"):
             raise RuntimeError(
@@ -521,6 +531,7 @@ class Gedai:
 
         # Batch all segments together for memory-efficient processing
         batch_size = 2000 # Increase for speed, decrease for memory
+        import gc
         for i in range(0, len(starts), batch_size):
             batch_starts = starts[i : i + batch_size]
             all_segments = []
@@ -546,8 +557,7 @@ class Gedai:
             
             # Explicit cleanup to keep RAM low
             del all_segments, all_segments_array, segments_epochs, corrected_segments_epochs, corrected_segments
-
-        # Normalize the corrected signal by the weight sum
+            gc.collect()
 
         # Normalize the corrected signal by the weight sum
         weight_sum[weight_sum == 0] = 1  # Avoid division by zero
@@ -607,7 +617,7 @@ class Gedai:
             axes[1].legend()
 
             fig.suptitle(
-                f'Band {w+1}: {wavelet_fit["fmin"]:.2f}-{wavelet_fit["fmax"]:.2f} Hz'
+                f"Band {w + 1}: {wavelet_fit['fmin']:.2f}-{wavelet_fit['fmax']:.2f} Hz"
             )
             figs.append(fig)
             axes[1].axvline(
@@ -620,7 +630,7 @@ class Gedai:
             axes[1].legend()
 
             fig.suptitle(
-                f'Band {w+1}: {wavelet_fit["fmin"]:.2f}-{wavelet_fit["fmax"]:.2f} Hz'
+                f"Band {w + 1}: {wavelet_fit['fmin']:.2f}-{wavelet_fit['fmax']:.2f} Hz"
             )
             figs.append(fig)
         return figs
