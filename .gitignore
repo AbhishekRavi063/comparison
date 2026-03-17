@@ -14,7 +14,7 @@ ENV/
 /results/
 /exports/
 /figures/
-gedai_official/
+# gedai_official/ (Un-ignored for Windows stability)
 # gedai_professor_fix/ (Un-ignored for Windows stability)
 *.edf
 *.npz

@@ -40,21 +40,18 @@ def _butter_bandpass(
 def bandpass_filter(
     X: np.ndarray, sfreq: float, l_freq: float, h_freq: float, chunk_size: int = 5000
 ) -> np.ndarray:
-    """Bandpass filter trials. Uses chunking to prevent memory peaks on 16GB RAM."""
+    """Bandpass filter trials. Modifies X in-place to save RAM on 16GB machines."""
     X = np.asarray(X, dtype=np.float32)
     b, a = _butter_bandpass(l_freq, h_freq, sfreq)
     
     n_trials = X.shape[0]
-    if n_trials <= chunk_size:
-        return filtfilt(b, a, X, axis=-1).astype(np.float32, copy=False)
-
     # Process in chunks to avoid float64 upcasting spikes
-    X_out = np.empty_like(X)
     for i in range(0, n_trials, chunk_size):
         end = min(i + chunk_size, n_trials)
-        X_out[i:end] = filtfilt(b, a, X[i:end], axis=-1).astype(np.float32, copy=False)
+        # Modify X in-place
+        X[i:end] = filtfilt(b, a, X[i:end], axis=-1).astype(np.float32, copy=False)
     
-    return X_out
+    return X
 
 
 def _median_bandpower_ratio(
@@ -434,18 +431,13 @@ def apply_gedai(
         return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32)
 
     X = np.asarray(X, dtype=np.float32)
-    x_band_ref = bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
     n_trials, n_channels, n_times = X.shape
 
-    # Use standard leadfield names when data has generic names (e.g. Cho2017 EEG01..EEG64)
-    # so GEDAI can match the leadfield; physical order may not match but allows comparison.
+    # Use standard leadfield names when data has generic names
     ch_names_use = list(ch_names)
     gedai_lib_path = os.environ.get("GEDAI_LIBRARY_PATH", "").strip()
     if gedai_lib_path and n_channels == 64:
-        generic = all(
-            len(c) >= 4 and c.upper().startswith("EEG") and c[3:].isdigit()
-            for c in ch_names
-        )
+        generic = all(len(c) >= 4 and c.upper().startswith("EEG") and c[3:].isdigit() for c in ch_names)
         if generic:
             try:
                 leadfield_names = _gedai_leadfield_ch_names(gedai_lib_path, n_channels)
@@ -454,87 +446,76 @@ def apply_gedai(
             except Exception:
                 pass
 
-    # Build MNE info with the best available montage for Weibo2014.
-    # CB1 (cerebellum) is a custom Weibo electrode absent from all MNE montages
-    # including standard_1005. We use 1005 for accurate coords on the other 59
-    # channels, then drop CB1 before GEDAI (its leadfield doesn't know CB1).
     info = mne.create_info(ch_names=ch_names_use, sfreq=sfreq, ch_types="eeg")
     try:
         montage = mne.channels.make_standard_montage("standard_1005")
         info.set_montage(montage, on_missing="ignore", verbose=False)
     except Exception:
-        pass  # montage setting is best-effort
+        pass
 
-    # Drop channels not in any MNE montage (CB1 for Weibo2014).
-    # If ALL channels lack positions (e.g. single-channel EEGdenoiseNet), proceed with all.
     no_pos_chs = [ch['ch_name'] for ch in info['chs'] if np.isnan(ch['loc'][:3]).any()]
     no_pos_idx = [info.ch_names.index(c) for c in no_pos_chs]
     
     if len(no_pos_chs) == len(ch_names):
-        no_pos_chs = []
-        no_pos_idx = []
         kept_idx = list(range(len(ch_names)))
     else:
         kept_idx = [i for i in range(len(ch_names)) if i not in no_pos_idx]
 
-    X_kept = X[:, kept_idx, :]
+    # MEMORY OPTIMIZATION: Work on a view if possible to save 2.5GB
+    if len(kept_idx) == X.shape[1]:
+        X_kept = X
+    else:
+        X_kept = X[:, kept_idx, :]
     info_kept = mne.pick_info(info, kept_idx)
     n_kept_channels = len(kept_idx)
-
+    
     import gc
-    gc.collect()
+    # Only keep X_kept
     X_concat = X_kept.transpose(1, 0, 2).reshape(n_kept_channels, n_trials * n_times).astype(np.float32)
+    # We can't delete X yet because it's owned by the caller (preprocess_subject_data)
+    # but we can at least let the caller know it can be deleted.
+    
     raw = mne.io.RawArray(X_concat, info_kept, verbose="ERROR")
     del X_concat
     gc.collect()
 
-    # Apply average reference BEFORE GEDAI (required per official tutorial).
     raw.set_eeg_reference("average", projection=False, verbose=False)
 
     try:
-        # ── Step 1: Broadband GEDAI (conservative) ──────────────────────────
+        # Step 1: Broadband GEDAI
         gedai_broad = Gedai(wavelet_type="haar", wavelet_level=0)
-        gedai_broad.fit_raw(
-            raw,
-            noise_multiplier=GEDAI_BROADBAND_NOISE_MULTIPLIER,
-            n_jobs=GEDAI_N_JOBS,
-            verbose=False,
-        )
+        gedai_broad.fit_raw(raw, noise_multiplier=GEDAI_BROADBAND_NOISE_MULTIPLIER, n_jobs=GEDAI_N_JOBS, verbose=False)
         raw_broad_clean = gedai_broad.transform_raw(raw, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False)
+        
+        # Cleanup input raw to free 2.5GB
+        del raw
+        gc.collect()
 
-        # ── Step 2: Spectral GEDAI (frequency-specific) ─────────────────────
-        gedai_spectral = Gedai(
-            wavelet_type="haar",
-            wavelet_level=GEDAI_SPECTRAL_WAVELET_LEVEL,
-            wavelet_low_cutoff=GEDAI_SPECTRAL_LOW_CUTOFF,
-        )
-        gedai_spectral.fit_raw(
-            raw_broad_clean,
-            noise_multiplier=GEDAI_SPECTRAL_NOISE_MULTIPLIER,
-            n_jobs=GEDAI_N_JOBS,
-            verbose=False,
-        )
-        raw_clean = gedai_spectral.transform_raw(
-            raw_broad_clean, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False
-        )
+        # Step 2: Spectral GEDAI
+        gedai_spectral = Gedai(wavelet_type="haar", wavelet_level=GEDAI_SPECTRAL_WAVELET_LEVEL, wavelet_low_cutoff=GEDAI_SPECTRAL_LOW_CUTOFF)
+        gedai_spectral.fit_raw(raw_broad_clean, noise_multiplier=GEDAI_SPECTRAL_NOISE_MULTIPLIER, n_jobs=GEDAI_N_JOBS, verbose=False)
+        raw_clean = gedai_spectral.transform_raw(raw_broad_clean, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False)
+        
+        del raw_broad_clean
+        gc.collect()
 
     except Exception as e:
         import warnings
-        warnings.warn(f"GEDAI two-step failed ({e}); falling back to bandpass baseline.")
-        return x_band_ref.astype(np.float32, copy=False)
+        warnings.warn(f"GEDAI two-step failed ({e}); falling back to baseline.")
+        # Re-apply bandpass on the fly to save memory
+        return bandpass_filter(X_kept, sfreq, l_freq, h_freq).astype(np.float32)
 
-    X_clean_kept = (
-        raw_clean.get_data()
-        .reshape(n_kept_channels, n_trials, n_times)
-        .transpose(1, 0, 2)
-        .astype(np.float32)
-    )
-    # Re-insert dropped channels as zeros to preserve output shape.
+    X_clean_kept = raw_clean.get_data().reshape(n_kept_channels, n_trials, n_times).transpose(1, 0, 2).astype(np.float32)
+    del raw_clean
+    gc.collect()
+
     if no_pos_idx:
         X_clean = np.zeros((n_trials, n_channels, n_times), dtype=np.float32)
         X_clean[:, kept_idx, :] = X_clean_kept
+        del X_clean_kept
     else:
         X_clean = X_clean_kept
+    
     x_clean = bandpass_filter(X_clean, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
     return x_clean
 
@@ -666,9 +647,9 @@ def preprocess_subject_data(
     if denoising not in {"baseline", "icalabel", "gedai", "asr"}:
         raise ValueError(f"Unknown denoising strategy: {denoising}")
 
-    X_bp = bandpass_filter(X, sfreq, l_freq, h_freq)
+    # X_bp = bandpass_filter(X, sfreq, l_freq, h_freq) # REMOVED TO SAVE RAM
     if denoising == "baseline":
-        return X_bp.astype(np.float32, copy=False)
+        return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
 
     if denoising == "asr":
         return apply_asr(X, sfreq, ch_names, l_freq, h_freq).astype(
@@ -676,6 +657,7 @@ def preprocess_subject_data(
         )
 
     if denoising == "icalabel":
+        # Delete original X immediately if possible or rely on apply_icalabel to be smart
         return apply_icalabel(X, sfreq, ch_names, l_freq, h_freq).astype(
             np.float32, copy=False
         )
