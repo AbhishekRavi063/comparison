@@ -10,12 +10,12 @@ venv/
 ENV/
 
 # Data and Results
-data/
-results/
-exports/
-figures/
+/data/
+/results/
+/exports/
+/figures/
 gedai_official/
-gedai_professor_fix/
+# gedai_professor_fix/ (Un-ignored for Windows stability)
 *.edf
 *.npz
 *.mat
