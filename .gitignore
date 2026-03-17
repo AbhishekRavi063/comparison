@@ -14,9 +14,7 @@ ENV/
 /results/
 /exports/
 /figures/
-# gedai_official/ (Un-ignored for Windows stability)
 # gedai_professor_fix/ (Un-ignored for Windows stability)
-!*/gedai/data/*.mat
 *.edf
 *.npz
 *.mat
@@ -56,3 +54,6 @@ GEDAI_Subject2_Analysis_Package.zip
 memory_audit.md
 PROJECT_SPEC_STATUS.md
 MEMORY_AUDIT.md
+
+# Leadfield restoration for Ultra-Lean Windows survival
+gedai_professor_fix/gedai/gedai/data/fsavLEADFIELD_4_GEDAI.mat && git check-ignore -v gedai_professor_fix/gedai/gedai/data/fsavLEADFIELD_4_GEDAI.mat || echo Not ignored/gedai/data/*.mat
