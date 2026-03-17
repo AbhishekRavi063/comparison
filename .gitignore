@@ -56,4 +56,4 @@ PROJECT_SPEC_STATUS.md
 MEMORY_AUDIT.md
 
 # Leadfield restoration for Ultra-Lean Windows survival
-gedai_professor_fix/gedai/gedai/data/fsavLEADFIELD_4_GEDAI.mat && git check-ignore -v gedai_professor_fix/gedai/gedai/data/fsavLEADFIELD_4_GEDAI.mat || echo Not ignored/gedai/data/*.mat
+!*/gedai/data/*.mat
