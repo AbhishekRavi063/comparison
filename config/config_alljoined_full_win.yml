@@ -1,0 +1,43 @@
+# Alljoined-1.6M — Full 10-Subject Benchmark (Windows Optimized)
+# Runtime: ~35-40 hours (Sequential on 16GB RAM)
+# Run: python -m src.run_all --config config/config_alljoined_full_win.yml
+
+data_root: ./data/alljoined/processed
+results_root: ./results/alljoined_full_win
+dataset_label: alljoined_win
+
+# All available core subjects
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 30.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+permutation:
+  n_subject_level: 10
+  n_pipeline_level: 100
+
+memory:
+  float_dtype: float32
+  n_jobs: 1          # MANDATORY for 16GB RAM
+  save_models: true
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false # Disabled to save RAM
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["C3", "Cz", "C4"]
+  segment_duration_s: 2.0
