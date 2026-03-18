@@ -364,18 +364,19 @@ class Gedai:
 
         # Sub-sampling logic for memory safety on large recordings
         max_fit_epochs = 5000
-        if len(epochs) > max_fit_epochs:
+        n_epochs_total = len(epochs.events)
+        if n_epochs_total > max_fit_epochs:
             logger.info(
-                f"Large recording detected ({len(epochs)} segments). "
+                f"Large recording detected ({n_epochs_total} segments). "
                 f"Sub-sampling {max_fit_epochs} segments for memory-efficient fitting."
             )
-            import numpy as np
-            indices = np.linspace(0, len(epochs) - 1, max_fit_epochs).astype(int)
+            indices = np.linspace(0, n_epochs_total - 1, max_fit_epochs).astype(int)
             epochs = epochs[indices]
 
         # Ensure float32 for fitting
         epochs.load_data()
-        epochs._data = epochs._data.astype(np.float32)
+        if hasattr(epochs, "_data") and epochs._data is not None:
+             epochs._data = epochs._data.astype(np.float32)
 
         self.fit_epochs(
             epochs,
