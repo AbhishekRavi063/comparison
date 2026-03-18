@@ -10,23 +10,19 @@ This guide will help you set up the project on the Windows machine (CIBM_2) for 
 Open **PowerShell** and run these commands:
 
 ```powershell
-# 1. Clone your code
+# 1. Clone & Switch to Optimized Branch
 git clone https://github.com/AbhishekRavi063/comparison.git
 cd comparison
+git fetch origin
+git checkout fix-windows-memory
 
-# 2. Setup the Professor's Fix
-git clone https://github.com/neurotuning/gedai.git gedai_professor_fix
-cd gedai_professor_fix
-git checkout fix
-cd ..
-
-# 3. Create a Virtual Environment
+# 2. Setup Virtual Environment
 python -m venv .venv
 .\.venv\Scripts\activate
 
-# 4. Install dependencies
+# 3. Install dependencies & Optimized Engine
 pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib click scipy psutil asrpy requests huggingface_hub pyarrow mne-icalabel torch
-pip install -e ./gedai_professor_fix
+pip install -e .\gedai_official
 ```
 
 ## 3. High-Performance Settings & Stability (Crucial)

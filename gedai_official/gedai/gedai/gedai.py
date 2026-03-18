@@ -196,7 +196,7 @@ class Gedai:
         avg_diag_power = np.trace(reference_cov) / reference_cov.shape[0]
         regularization_lambda = 0.05
         epsilon = regularization_lambda * avg_diag_power
-        reference_cov = reference_cov + epsilon * np.eye(reference_cov.shape[0])
+        reference_cov = (reference_cov + epsilon * np.eye(reference_cov.shape[0])).astype(np.float32)
 
         # Broadband data
         epochs_wavelet, freq_bands, levels = epochs_to_wavelet(
@@ -358,9 +358,25 @@ class Gedai:
             duration=duration,
             overlap=overlap_seconds,
             reject_by_annotation=reject_by_annotation,
-            preload=True,
+            preload=False,
             verbose=False,
         )
+
+        # Sub-sampling logic for memory safety on large recordings
+        max_fit_epochs = 5000
+        if len(epochs) > max_fit_epochs:
+            logger.info(
+                f"Large recording detected ({len(epochs)} segments). "
+                f"Sub-sampling {max_fit_epochs} segments for memory-efficient fitting."
+            )
+            import numpy as np
+            indices = np.linspace(0, len(epochs) - 1, max_fit_epochs).astype(int)
+            epochs = epochs[indices]
+
+        # Ensure float32 for fitting
+        epochs.load_data()
+        epochs._data = epochs._data.astype(np.float32)
+
         self.fit_epochs(
             epochs,
             noise_multiplier=noise_multiplier,
