@@ -37,10 +37,12 @@ def cohen_d_pooled(
     x1 = np.asarray(scores1, dtype=float)
     x2 = np.asarray(scores2, dtype=float)
     n1, n2 = len(x1), len(x2)
+    if n1 < 2 or n2 < 2:
+        return 0.0
     sd1 = x1.std(ddof=1)
     sd2 = x2.std(ddof=1)
     pooled_sd = np.sqrt(((n1 - 1) * sd1**2 + (n2 - 1) * sd2**2) / (n1 + n2 - 2))
-    if pooled_sd == 0:
+    if pooled_sd == 0 or np.isnan(pooled_sd):
         return 0.0
     return float((x1.mean() - x2.mean()) / pooled_sd)
 
@@ -53,6 +55,9 @@ def paired_permutation_p_value(
     """Paired permutation test on fold-level scores using scipy.stats.permutation_test."""
     x1 = np.asarray(scores1, dtype=float)
     x2 = np.asarray(scores2, dtype=float)
+
+    if len(x1) < 2 or len(x2) < 2:
+        return 1.0
 
     def statistic(a, b):
         return np.mean(a - b)
