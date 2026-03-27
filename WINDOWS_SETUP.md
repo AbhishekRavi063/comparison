@@ -70,7 +70,25 @@ Use the two "Pre-print" configurations we prepared:
 python src/data/prepare_alljoined.py --subjects 1 2 3 4 5 6 7 8 9 10 --max-edfs 5
 ```
 
-**Step B: End-to-End Validation (Smoke Test)**
+**Step B: End-to-End Validation (Smoke Test — 1 subject, full pipeline)**
+
+Recommended (prepares subject 1 from Hugging Face, then runs benchmark):
+
+```powershell
+.\scripts\smoke_alljoined_1sub.ps1
+```
+
+Optional: `$env:MAX_EDFS = "5"` before running for more EDFs per subject.
+
+Or run only the benchmark if `data\alljoined\processed\subject_1.npz` already exists:
+
+```powershell
+$env:MPLBACKEND = "Agg"
+python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
+```
+
+Legacy 2-subject quick check (baseline + GEDAI only, no tangent):
+
 ```powershell
 python -m src.run_all --config config/config_alljoined_professor_smoke.yml
 ```

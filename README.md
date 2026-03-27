@@ -55,7 +55,7 @@ All implementations are designed for **local execution under 16 GB RAM**, with
 
 ## Supported Datasets
 
-Two real motor imagery datasets are supported out of the box, both converted
+The following real datasets are supported out of the box, converted
 to the common `.npz` format expected by `NpzMotorImageryDataset`:
 
 - **PhysioNet EEG Motor Movement/Imagery (EEGBCI)**  
@@ -87,8 +87,25 @@ to the common `.npz` format expected by `NpzMotorImageryDataset`:
     subjects: [1, 2, 3]
     ```
 
+- **Alljoined-1.6M (consumer EEG, Hugging Face)**  
+  - Prepared via `src/data/prepare_alljoined.py` (downloads EDF + metadata per subject).  
+  - **Smoke test (1 subject, full pipeline paths: CSP + tangent, baseline + ICALabel + GEDAI):**
+    ```bash
+    # From project root — prepares subject 1 then runs the benchmark
+    bash scripts/smoke_alljoined_1sub.sh
+    ```
+    On Windows (PowerShell): `.\scripts\smoke_alljoined_1sub.ps1`  
+    Or manually:
+    ```bash
+    python -m src.data.prepare_alljoined --subjects 1 --max-edfs 2 --out-root data/alljoined/processed
+    export MPLBACKEND=Agg
+    python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
+    ```
+    Optional: `MAX_EDFS=5 bash scripts/smoke_alljoined_1sub.sh` to include more EDFs per subject (larger download).  
+    Results: `results/alljoined_smoke_1sub/`.
+
 You can run the exact same CSP and tangent-space backbones, denoising variants,
-and statistical pipeline on both datasets simply by changing `data_root` and
+and statistical pipeline on these datasets by changing `data_root` and
 `subjects` in `config.yml`. This directly implements your requirement to use
 **PhysioNet** plus at least one additional MI dataset in the same framework.
 
