@@ -24,17 +24,46 @@ All implementations are designed for **local execution under 16 GB RAM**, with
 
 ---
 
+## Documentation map
+
+| Topic | Where |
+|--------|--------|
+| **This file** | Scientific design, configs, backbones, denoising, stats, plots, basic run steps |
+| **`TESTING.md`** | Pytest cases, how to run tests, synthetic vs real-data validation |
+| **`WINDOWS_SETUP.md`** | Windows / PowerShell, venv, `pip install`, paging file, batching long runs |
+| **`docs/FULL_RUN_RAM_EFFICIENT.md`** | Two-pass runs (baseline+ICA vs GEDAI) + merging results on 16 GB RAM |
+| **`config/`** | Example YAMLs: `config.yml`, PhysioNet/BNCI/Alljoined smoke and full configs |
+
+There is **no single root `requirements.txt`**; install Python deps with **`python -m pip install …`** (see **Running the Pipeline** and **`WINDOWS_SETUP.md`**). The **GEDAI** library is the nested package **`gedai_official/`** — install it in editable mode: `pip install -e ./gedai_official` (see **GEDAI dependency** below).
+
+---
+
+## Entry points (CLI)
+
+| Command | Purpose |
+|---------|---------|
+| `python -m src.run_all --config config/…yml` | Main benchmark: within-subject CV, permutations, tables, optional plots (`experiment.run_experiment`) |
+| `python -m src.run_full_test …` | Wrapper around full test + options (see `src/run_full_test.py`) |
+| `python run_evaluation.py` | Cross-subject benchmark (`run_cross_subject_benchmark`) |
+| `python -m src.run_plots --config …` | Figures from saved CSVs |
+| `python -m src.run_signal_integrity --config …` | Time / PSD signal-integrity figures |
+| `pytest tests/ -v` | Automated tests (synthetic data); see `TESTING.md` |
+
+---
+
 ## Project Structure
 
-- `config/config.yml` – experiment configuration (subjects, CV, permutations, memory)
-- `requirements.txt` – Python dependencies
+- `config/` – YAML experiment configs (point `--config` here; start from `config/config.yml` or a dataset-specific example)
+- `gedai_official/` – **GEDAI** Python package (install with `pip install -e ./gedai_official`; includes bundled leadfield `gedai/data/fsavLEADFIELD_4_GEDAI.mat`)
+- `scripts/` – helpers (e.g. Alljoined smoke: `scripts/smoke_alljoined_1sub.sh` / `.ps1`)
 - `src/`
   - `data/` – dataset preparation scripts
     - `prepare_physionet_eegbci.py` – PhysioNet EEG Motor Movement/Imagery (EEGBCI)
     - `prepare_bnci2014_001.py` – BNCI 2014-001 (BCI Competition IV 2a)
+    - `prepare_alljoined.py` – Alljoined-1.6M (Hugging Face download → per-subject `.npz`)
   - `config.py` – dataclass wrapper for the YAML config
   - `io/dataset.py` – loader for per-subject `.npz` motor imagery datasets
-  - `denoising/pipelines.py` – bandpass, ICALabel, and GEDAI *hook*
+  - `denoising/pipelines.py` – bandpass, ICALabel, ASR, GEDAI (continuous or epoch fallback)
   - `backbones/csp.py` – CSP → LDA backbone
   - `backbones/tangent_space.py` – covariance → tangent space → logistic regression
   - `evaluation/metrics.py` – empirical p-values, Cohen’s d, paired permutation tests
@@ -42,6 +71,8 @@ All implementations are designed for **local execution under 16 GB RAM**, with
   - `plots/performance.py` – group-level accuracy plots by backbone/pipeline
   - `plots/signal_integrity.py` – utilities for time/PSD overlay plots
   - `run_all.py` – run full experiment over all subjects
+  - `run_full_test.py` – full-test driver with CLI options
+  - `run_cross_subject_benchmark.py` – subject-disjoint evaluation
   - `run_plots.py` – generate performance plots from CSV outputs
   - `run_signal_integrity.py` – generate time/PSD plots for a chosen subject
 - `results/`
@@ -89,7 +120,7 @@ to the common `.npz` format expected by `NpzMotorImageryDataset`:
 
 - **Alljoined-1.6M (consumer EEG, Hugging Face)**  
   - Prepared via `src/data/prepare_alljoined.py` (downloads EDF + metadata per subject).  
-  - **Smoke test (1 subject, full pipeline paths: CSP + tangent, baseline + ICALabel + GEDAI):**
+  - **Smoke test (1 subject: CSP + tangent, baseline vs GEDAI only — ICALabel off for speed):**
     ```bash
     # From project root — prepares subject 1 then runs the benchmark
     bash scripts/smoke_alljoined_1sub.sh
@@ -169,7 +200,10 @@ Memory-related design choices (optimized for MacBook / 16 GB RAM):
 
 - **float32 throughout**: dataset load, bandpass, ICALabel, GEDAI (input and output), CSP log-variance features, tangent-space features and covariance matrices. Reduces peak RAM.
 - **No multiprocessing**: all computations use `n_jobs=1` (LDA, LogReg, MNE filter, etc.).
-- **GEDAI**: run in CPU-only mode with **no parallel processing** (`n_jobs=1` for `fit_raw` and `transform_raw`); input is cast to `float32`. Minimizes memory load when run sequentially per subject.
+- **GEDAI Ultra-Lean Processing**:
+  - Run in CPU-only mode with **no parallel processing** (`n_jobs=1` for `fit_raw` and `transform_raw`).
+  - **Sub-sampling**: Threshold fitting (`fit_raw`) is limited to 5,000 segments to prevent OOM on massive files (e.g., 2.5GB Alljoined subjects).
+  - **Batching**: Transformation (`transform_raw`) processes trials in batches of 2,000 to keep the active memory footprint under 150MB.
 - **Sequential subject processing** in `run_experiment`; explicit `gc.collect()` after each subject.
 - **No accumulation of folds** in memory; only scalar accuracies and small stats are kept.
 - **Models saved incrementally** to `results/models/` after each run (one file per subject/backbone/pipeline) so you don’t keep large objects in memory.
@@ -228,17 +262,20 @@ Supported denoising variants:
   - Automatically excludes artifactual ICs (eye, muscle, heart).
   - Returns cleaned data reshaped back to `(n_trials, n_channels, n_times)`, cast
     to the original dtype.
-- **Dependency:** `mne-icalabel` needs either `onnxruntime` or `torch` for its classifier. `requirements.txt` includes `onnxruntime`; install with `pip install -r requirements.txt` (or use PyTorch if you prefer).
+- **Dependency:** `mne-icalabel` needs either `onnxruntime` or `torch` for its classifier (install one of them with `pip`; PyTorch alone is enough for many setups).
 
 ### GEDAI (`apply_gedai`)
 
-- Implemented in `src/denoising/pipelines.py` using the official `gedai` package:
-  - Builds an MNE `RawArray` from epoched data.
-  - Instantiates `Gedai(wavelet_type="haar", wavelet_level=0)`, then calls
-    `fit_raw(raw, n_jobs=1)` and `transform_raw(raw, n_jobs=1)`.
-  - **No parallel processing**: `n_jobs=1` is used for all GEDAI steps to minimize memory.
-- If the package is not installed or fit/transform fails (e.g. missing leadfield), the function falls back to identity (passthrough) and issues a warning.
-- For a custom leadfield or API, adapt the `Gedai(...)` construction and calls inside `apply_gedai`.
+- **Dependency:** install the copy vendored in this repo as an editable package (matches the intended API):
+  ```bash
+  pip install -e ./gedai_official
+  ```
+  At import time Python resolves the top-level package name `gedai` from `gedai_official/`. The **leadfield** file ships with that package (`gedai_official/gedai/data/fsavLEADFIELD_4_GEDAI.mat`); no separate download. Optional: set `GEDAI_LIBRARY_PATH` to the **`gedai_official`** directory if path resolution needs a hint (e.g. some Windows layouts).
+- Implemented in `src/denoising/pipelines.py` using `from gedai import Gedai`:
+  - **Epoch-level path:** two-step broadband + spectral GEDAI on an MNE `Raw` built from trials.
+  - **Preferred for supported datasets:** continuous raw + re-epoching when `subject_id` and dataset label allow loading session EDFs (see `preprocess_subject_data`).
+  - **No parallel processing for memory**: `n_jobs=1` for GEDAI steps.
+- If GEDAI is not installed or fit/transform fails, the code warns and may fall back to identity (passthrough) or epoch-level fallback depending on context.
 
 ---
 
@@ -349,11 +386,17 @@ This supports **physiological plausibility**: check that alpha/mu/beta are prese
 
 1. **Install and set up the environment**
 
+   Create a venv in the **project root**, then install **GEDAI** and the scientific stack (adjust versions as needed):
+
    ```bash
    python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
+   python -m pip install --upgrade pip
+   python -m pip install -e ./gedai_official
+   python -m pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib click scipy psutil requests huggingface_hub pyarrow mne-icalabel onnxruntime torch
    ```
+
+   On **Windows**, if `python` / `python3` is not on `PATH`, use the installer from [python.org](https://www.python.org/downloads/) with **Add to PATH**, or see **`WINDOWS_SETUP.md`**. After moving the project to another drive, recreate the venv or use **`python -m pip`** (not bare `pip`) so launchers stay valid.
 
 2. **Prepare data**
 
@@ -399,6 +442,4 @@ This supports **physiological plausibility**: check that alpha/mu/beta are prese
 - **Signal integrity** – dedicated script for time-domain and PSD comparisons
   focused on motor cortex channels, enabling inspection of alpha/mu/beta bands.
 
-The only intentional **hook point** left for you to finalize is the exact GEDAI
-call inside `apply_gedai`, which must be adapted to your forward model and the
-particular API version you are using.
+**GEDAI** is integrated in `apply_gedai` / `apply_gedai_from_continuous_raw`; tune noise multipliers, wavelet level, or montage in `src/denoising/pipelines.py` if you need study-specific behavior. Use the **`gedai_official`** checkout pinned in this repo unless you intentionally install another fork as the `gedai` package.

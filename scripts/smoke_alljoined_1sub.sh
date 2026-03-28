@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test: prepare subject 1 from Hugging Face, then run full pipeline paths (see config_alljoined_smoke_1sub.yml).
+# Smoke test: prepare subject 1 from Hugging Face, then baseline vs GEDAI (see config_alljoined_smoke_1sub.yml).
 # Usage: from repo root,  bash scripts/smoke_alljoined_1sub.sh
 # Requires: huggingface_hub, mne, and project deps (see README / WINDOWS_SETUP.md).
 

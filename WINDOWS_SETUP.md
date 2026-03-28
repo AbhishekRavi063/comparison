@@ -70,7 +70,7 @@ Use the two "Pre-print" configurations we prepared:
 python src/data/prepare_alljoined.py --subjects 1 2 3 4 5 6 7 8 9 10 --max-edfs 5
 ```
 
-**Step B: End-to-End Validation (Smoke Test — 1 subject, full pipeline)**
+**Step B: End-to-End Validation (Smoke Test — 1 subject, baseline vs GEDAI; ICALabel off for speed)**
 
 Recommended (prepares subject 1 from Hugging Face, then runs benchmark):
 

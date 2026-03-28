@@ -1,4 +1,4 @@
-# Smoke test: prepare subject 1 from Hugging Face, then run full pipeline paths (see config_alljoined_smoke_1sub.yml).
+# Smoke test: prepare subject 1 from Hugging Face, then baseline vs GEDAI (see config_alljoined_smoke_1sub.yml).
 # Usage: from repo root,  .\scripts\smoke_alljoined_1sub.ps1
 # Optional: $env:MAX_EDFS = "5"  for more EDFs per subject before running.
 
