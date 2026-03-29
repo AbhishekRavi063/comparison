@@ -24,6 +24,9 @@ cv:
 permutation:
   n_subject_level: 20
   n_pipeline_level: 200
+  # Smoke test: never trigger adaptive step-up (default would add up to 10k extra null
+  # permutations when p is ~0.04–0.06 — looks “stuck” and can take many hours).
+  adaptive_step_up: false
 
 memory:
   float_dtype: float32
