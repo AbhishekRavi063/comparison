@@ -76,7 +76,7 @@ class ExperimentConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
         path = Path(path)
-        with path.open("r") as f:
+        with path.open("r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
         denoising_cfg = cfg["denoising"]

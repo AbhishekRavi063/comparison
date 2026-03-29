@@ -1,4 +1,4 @@
-# Alljoined-1.6M — 1-subject smoke test (baseline vs GEDAI only; ICALabel off for faster runs)
+# Alljoined-1.6M - 1-subject smoke test (baseline vs GEDAI only; ICALabel off for faster runs)
 # Exercises: CSP + tangent space, baseline + GEDAI (lighter CV/perms than full preprint).
 #
 # Prerequisite: processed NPZ for subject 1 (see scripts/smoke_alljoined_1sub.sh or .ps1).
@@ -25,7 +25,7 @@ permutation:
   n_subject_level: 20
   n_pipeline_level: 200
   # Smoke test: never trigger adaptive step-up (default would add up to 10k extra null
-  # permutations when p is ~0.04–0.06 — looks “stuck” and can take many hours).
+  # permutations when p is ~0.04-0.06 - looks "stuck" and can take many hours).
   adaptive_step_up: false
 
 memory:
