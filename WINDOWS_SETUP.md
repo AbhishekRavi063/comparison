@@ -87,6 +87,13 @@ $env:MPLBACKEND = "Agg"
 python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
 ```
 
+**Cho2017 (MOABB) 1-subject smoke** — checks download + pipeline without Hugging Face:
+
+```powershell
+python -m pip install moabb
+.\scripts\smoke_cho2017_1sub.ps1
+```
+
 Legacy 2-subject quick check (baseline + GEDAI only, no tangent):
 
 ```powershell

@@ -61,6 +61,7 @@ There is **no single root `requirements.txt`**; install Python deps with **`pyth
     - `prepare_physionet_eegbci.py` – PhysioNet EEG Motor Movement/Imagery (EEGBCI)
     - `prepare_bnci2014_001.py` – BNCI 2014-001 (BCI Competition IV 2a)
     - `prepare_alljoined.py` – Alljoined-1.6M (Hugging Face download → per-subject `.npz`)
+    - `prepare_cho2017.py` – Cho2017 motor imagery (MOABB / GigaDB → per-subject `.npz`)
   - `config.py` – dataclass wrapper for the YAML config
   - `io/dataset.py` – loader for per-subject `.npz` motor imagery datasets
   - `denoising/pipelines.py` – bandpass, ICALabel, ASR, GEDAI (continuous or epoch fallback)
@@ -117,6 +118,23 @@ to the common `.npz` format expected by `NpzMotorImageryDataset`:
     data_root: ./data/bnci2014_001
     subjects: [1, 2, 3]
     ```
+
+- **Cho2017 (motor imagery, MOABB / GigaDB)**  
+  - Prepared via `src/data/prepare_cho2017.py` (downloads through **MOABB**; first run can take several minutes).  
+  - Install: `python -m pip install moabb`.  
+  - **One-subject smoke** (good for checking a Windows / fresh env without Hugging Face):
+    ```bash
+    bash scripts/smoke_cho2017_1sub.sh
+    ```
+    PowerShell: `.\scripts\smoke_cho2017_1sub.ps1`  
+    Or manually:
+    ```bash
+    python -m src.data.prepare_cho2017 --subjects 1 --out-root data/cho2017/processed
+    export MPLBACKEND=Agg
+    python -m src.run_all --config config/config_cho2017_smoke_1sub.yml
+    ```
+    Results: `results/cho2017_smoke_1sub/`.  
+  - Minimal config with 2 subjects: `config/config_cho2017_smoke.yml`.
 
 - **Alljoined-1.6M (consumer EEG, Hugging Face)**  
   - Prepared via `src/data/prepare_alljoined.py` (downloads EDF + metadata per subject).  
@@ -393,7 +411,7 @@ This supports **physiological plausibility**: check that alpha/mu/beta are prese
    source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
    python -m pip install --upgrade pip
    python -m pip install -e ./gedai_official
-   python -m pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib click scipy psutil requests huggingface_hub pyarrow mne-icalabel onnxruntime torch
+   python -m pip install numpy mne scikit-learn pandas joblib tqdm pywavelets h5py matplotlib click scipy psutil requests huggingface_hub pyarrow mne-icalabel onnxruntime torch moabb
    ```
 
    On **Windows**, if `python` / `python3` is not on `PATH`, use the installer from [python.org](https://www.python.org/downloads/) with **Add to PATH**, or see **`WINDOWS_SETUP.md`**. After moving the project to another drive, recreate the venv or use **`python -m pip`** (not bare `pip`) so launchers stay valid.
