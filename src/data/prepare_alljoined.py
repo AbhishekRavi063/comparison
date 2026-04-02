@@ -20,9 +20,11 @@ Usage:
 import argparse
 import gc
 import os
+import random
 import re
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, List, Optional, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -30,6 +32,43 @@ import mne
 from huggingface_hub import hf_hub_download, list_repo_files
 
 REPO_ID = "Alljoined/Alljoined-1.6M"
+
+T = TypeVar("T")
+
+
+def _is_transient_download_error(exc: BaseException) -> bool:
+    """True for typical network drops (HF, proxies, Wi‑Fi) that often succeed on retry."""
+    msg = str(exc).lower()
+    name = type(exc).__name__
+    if "10054" in msg or "forcibly closed" in msg:
+        return True
+    if "connection" in name.lower() or "timeout" in name.lower():
+        return True
+    if "timeout" in msg or "connection reset" in msg or "broken pipe" in msg:
+        return True
+    if "remotedisconnected" in name or "protocolerror" in name:
+        return True
+    return False
+
+
+def _hf_retry(desc: str, fn: Callable[[], T], max_attempts: int = 8) -> T:
+    """Retry Hugging Face HTTP calls on transient failures (e.g. WinError 10054)."""
+    last: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except BaseException as e:
+            last = e
+            if attempt >= max_attempts or not _is_transient_download_error(e):
+                raise
+            wait = min(120.0, 2**attempt + random.uniform(0, 2))
+            print(
+                f"  [{desc}] failed ({type(e).__name__}), retry {attempt}/{max_attempts} in {wait:.0f}s...",
+                flush=True,
+            )
+            time.sleep(wait)
+    assert last is not None
+    raise last
 TARGET_SFREQ = 250.0  # Consistency with other pipelines
 EEG_CHANNELS = [
     'Cz', 'FCz', 'Afz', 'Fp1', 'F5', 'F1', 'CP5', 'CP3', 'CP1', 'P1', 
@@ -40,7 +79,10 @@ EEG_CHANNELS = [
 def download_subject_data(subject: int, max_edfs: Optional[int] = None) -> tuple[List[str], str]:
     """Download EDF files and metadata for a subject. Returns local paths."""
     print(f"  Listing files for Subject {subject}...", flush=True)
-    all_files = list_repo_files(REPO_ID, repo_type="dataset")
+    all_files = _hf_retry(
+        "list_repo_files",
+        lambda: list_repo_files(REPO_ID, repo_type="dataset"),
+    )
     
     # Raw EDFs
     subj_str = f"sub-{subject:02d}"
@@ -52,13 +94,24 @@ def download_subject_data(subject: int, max_edfs: Optional[int] = None) -> tuple
     
     local_edfs = []
     for f in edf_files:
-        path = hf_hub_download(repo_id=REPO_ID, filename=f, repo_type="dataset")
+        fname = Path(f).name
+        path = _hf_retry(
+            f"download {fname}",
+            lambda fp=f: hf_hub_download(
+                repo_id=REPO_ID, filename=fp, repo_type="dataset"
+            ),
+        )
         local_edfs.append(path)
-        
+
     # Metadata
     meta_file = f"preprocessed_eeg/{subj_str}/experiment_metadata_categories.parquet"
     print(f"  Downloading metadata: {meta_file}...", flush=True)
-    meta_path = hf_hub_download(repo_id=REPO_ID, filename=meta_file, repo_type="dataset")
+    meta_path = _hf_retry(
+        "download metadata parquet",
+        lambda: hf_hub_download(
+            repo_id=REPO_ID, filename=meta_file, repo_type="dataset"
+        ),
+    )
     
     return local_edfs, meta_path
 
