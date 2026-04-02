@@ -24,7 +24,7 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, TypeVar
+from typing import Callable, List, Optional, Set, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -115,6 +115,25 @@ def download_subject_data(subject: int, max_edfs: Optional[int] = None) -> tuple
     
     return local_edfs, meta_path
 
+
+def _common_eeg_channel_order(edf_paths: List[str]) -> List[str]:
+    """Channels present in every EDF (ordered like EEG_CHANNELS) so all trials share n_channels."""
+    inter: Optional[Set[str]] = None
+    for edf_path in edf_paths:
+        try:
+            raw = mne.io.read_raw_edf(edf_path, preload=False, verbose=False)
+        except Exception:
+            continue
+        present = {c for c in EEG_CHANNELS if c in raw.ch_names}
+        raw.close()
+        if not present:
+            continue
+        inter = present if inter is None else (inter & present)
+    if inter:
+        return [c for c in EEG_CHANNELS if c in inter]
+    return [c for c in EEG_CHANNELS]
+
+
 def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root: Path):
     """Epochs data for a single subject and saves to NPZ."""
     df_meta = pd.read_parquet(meta_path)
@@ -130,6 +149,13 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
     tmin, tmax = 0.0, 1.0
     n_samples = int(round(tmax * TARGET_SFREQ))
 
+    ch_use = _common_eeg_channel_order(edf_paths)
+    if len(ch_use) < len(EEG_CHANNELS):
+        print(
+            f"  Note: using {len(ch_use)} channels common to all blocks (not {len(EEG_CHANNELS)}).",
+            flush=True,
+        )
+
     print(f"  Epoching Subject {subject}...", flush=True)
 
     for edf_path in edf_paths:
@@ -138,8 +164,17 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
         except Exception as e:
             print(f"    [Skip] Error reading {Path(edf_path).name}: {e}")
             continue
-            
-        raw.pick_channels([c for c in EEG_CHANNELS if c in raw.ch_names])
+
+        missing = [c for c in ch_use if c not in raw.ch_names]
+        if missing:
+            print(
+                f"    [Skip] {Path(edf_path).name}: missing channels {missing[:5]}{'...' if len(missing) > 5 else ''}",
+                flush=True,
+            )
+            raw.close()
+            continue
+
+        raw.pick_channels(ch_use)
         
         # Resample to 250Hz immediately to save memory
         if abs(raw.info['sfreq'] - TARGET_SFREQ) > 0.1:
@@ -206,7 +241,7 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
         X=X,
         y=y,
         sfreq=TARGET_SFREQ,
-        ch_names=np.array(EEG_CHANNELS, dtype=object)
+        ch_names=np.array(ch_use, dtype=object),
     )
     
     print(f"  ✓ Saved {len(all_y)} trials to {out_path}")
