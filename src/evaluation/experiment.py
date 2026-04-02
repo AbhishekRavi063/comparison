@@ -144,6 +144,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 # EDF session rather than working on concatenated short trials.
                 subject_id=sid if pipeline == "gedai" else None,
                 dataset_name=cfg.dataset_label,
+                gedai_n_jobs=cfg.memory.n_jobs,
             )
             
             # --- Signal Preservation Calculation ---

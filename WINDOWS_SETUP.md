@@ -66,8 +66,17 @@ For the 20-subject "Gold Standard" run, it is safer to run in batches of 5. This
 Use the two "Pre-print" configurations we prepared:
 
 **Step A: Download Data (Do this first)**
+
+Full benchmark (every EDF per subject — large download, use parallel subjects sparingly for RAM/HF limits):
+
 ```powershell
-python src/data/prepare_alljoined.py --subjects 1 2 3 4 5 6 7 8 9 10 --max-edfs 5
+python -m src.data.prepare_alljoined --subjects 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 --all-edfs --workers 3 --out-root data/alljoined/processed
+```
+
+Smoke / quick prep (caps EDFs per subject):
+
+```powershell
+python -m src.data.prepare_alljoined --subjects 1 2 3 4 5 6 7 8 9 10 --max-edfs 5
 ```
 
 **Step B: End-to-End Validation (Smoke Test — 1 subject, baseline vs GEDAI; ICALabel off for speed)**
@@ -100,10 +109,19 @@ Legacy 2-subject quick check (baseline + GEDAI only, no tangent):
 python -m src.run_all --config config/config_alljoined_professor_smoke.yml
 ```
 
-**Step C: The Full 10-Subject Run**
+**Step C: Full 20-subject workstation run (parallel shards + merge)**
+
+Use `config/config_alljoined_workstation.yml` (sets `memory.n_jobs` for GEDAI threading). Run four processes with disjoint subjects, then merge CSVs:
+
 ```powershell
-python -m src.run_all --config config/config_alljoined_preprint_full.yml
+$env:MPLBACKEND = "Agg"
+.\scripts\run_alljoined_shards.ps1 -Config config/config_alljoined_workstation.yml -NumShards 4
+python -m src.merge_sharded_results --shards results/alljoined_w1 results/alljoined_w2 results/alljoined_w3 results/alljoined_w4 --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,icalabel,gedai
 ```
 
+Single-process (simpler, slower): `python -m src.run_all --config config/config_alljoined_workstation.yml`
+
+**Legacy 10-subject config:** `python -m src.run_all --config config/config_alljoined_full_win.yml`
+
 ---
-*Note: Since the GPU is broken, the script will automatically fallback to the CPU. With 24 cores, it will still be extremely fast!*
+GEDAI runs on CPU unless you configure PyTorch/CUDA; `memory.n_jobs` controls GEDAI’s internal thread count (lower it if you run many shard processes in parallel).

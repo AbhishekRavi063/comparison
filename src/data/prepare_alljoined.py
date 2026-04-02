@@ -22,7 +22,7 @@ import gc
 import os
 import re
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -37,7 +37,7 @@ EEG_CHANNELS = [
     'PO4', 'PO8', 'P8', 'P6', 'P4', 'P2', 'CP2', 'CP4', 'CP6', 'F2', 'F6', 'Fp2'
 ]
 
-def download_subject_data(subject: int, max_edfs: int = None) -> tuple[List[str], str]:
+def download_subject_data(subject: int, max_edfs: Optional[int] = None) -> tuple[List[str], str]:
     """Download EDF files and metadata for a subject. Returns local paths."""
     print(f"  Listing files for Subject {subject}...", flush=True)
     all_files = list_repo_files(REPO_ID, repo_type="dataset")
@@ -163,35 +163,91 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
         "sfreq": TARGET_SFREQ
     }
 
-def _prepare_subject(subject: int, out_root: Path, max_edfs: int = 2) -> dict:
+def _prepare_subject(subject: int, out_root: Path, max_edfs: int | None = 2) -> dict | None:
     """Download and process a subject for the inspection/benchmark suite."""
     edf_paths, meta_path = download_subject_data(subject, max_edfs=max_edfs)
     return process_subject(subject, edf_paths, meta_path, out_root)
+
+
+def _prepare_subject_worker(payload: tuple) -> tuple[int, str | None]:
+    """Picklable worker for ProcessPoolExecutor (Windows spawn). Returns (subject_id, error_or_none)."""
+    subject, out_root_str, max_edfs, overwrite = payload
+    out_root = Path(out_root_str)
+    out_path = out_root / f"subject_{subject}.npz"
+    if out_path.exists() and not overwrite:
+        return subject, None
+    try:
+        print(f"Preparing Alljoined Subject {subject}...", flush=True)
+        info = _prepare_subject(subject, out_root, max_edfs=max_edfs)
+        if info:
+            print(f"  ✓ Subject {subject}: {info}", flush=True)
+        return subject, None
+    except Exception as e:
+        return subject, str(e)
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--subjects", type=int, nargs="+", default=[1])
     parser.add_argument("--out-root", type=str, default="data/alljoined/processed")
-    parser.add_argument("--max-edfs", type=int, default=2)
+    parser.add_argument(
+        "--max-edfs",
+        type=int,
+        default=2,
+        help="Cap EDF files per subject (smoke tests). Ignored if --all-edfs.",
+    )
+    parser.add_argument(
+        "--all-edfs",
+        action="store_true",
+        help="Use every EDF listed on Hugging Face for each subject (full benchmark).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel subject downloads/processes (1 = sequential). Watch RAM and HF rate limits.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing processed files")
     args = parser.parse_args()
     
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
-    
+
+    max_edfs: int | None = None if args.all_edfs else int(args.max_edfs)
+
+    todo: List[int] = []
     for subj in args.subjects:
         out_path = out_root / f"subject_{subj}.npz"
         if out_path.exists() and not args.overwrite:
             print(f"Skipping Subject {subj} (already exists). Use --overwrite to re-process.")
             continue
-            
-        print(f"Preparing Alljoined Subject {subj}...")
-        try:
-            info = _prepare_subject(subj, out_root, max_edfs=args.max_edfs)
-            if info:
-                print(f"  ✓ {info}")
-        except Exception as e:
-            print(f"  [Failed] Subject {subj}: {e}")
+        todo.append(subj)
+
+    if not todo:
+        return
+
+    if args.workers <= 1:
+        for subj in todo:
+            print(f"Preparing Alljoined Subject {subj}...")
+            try:
+                info = _prepare_subject(subj, out_root, max_edfs=max_edfs)
+                if info:
+                    print(f"  ✓ {info}")
+            except Exception as e:
+                print(f"  [Failed] Subject {subj}: {e}")
+        return
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    payloads = [
+        (s, str(out_root.resolve()), max_edfs, args.overwrite) for s in todo
+    ]
+    with ProcessPoolExecutor(max_workers=int(args.workers)) as ex:
+        futures = [ex.submit(_prepare_subject_worker, p) for p in payloads]
+        for fut in as_completed(futures):
+            subj, err = fut.result()
+            if err:
+                print(f"  [Failed] Subject {subj}: {err}", flush=True)
 
 if __name__ == "__main__":
     main()

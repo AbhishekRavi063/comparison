@@ -308,8 +308,8 @@ def apply_icalabel(
     return x_clean.astype(np.float32, copy=False)
 
 
-# GEDAI is run with n_jobs=1 everywhere to minimize memory (no parallel processing).
-GEDAI_N_JOBS = 1
+# Default GEDAI threads when caller does not pass gedai_n_jobs (16 GB laptops).
+_DEFAULT_GEDAI_N_JOBS = 1
 # Step-1 broadband: conservative (6.0) to remove only large transient artifacts.
 GEDAI_BROADBAND_NOISE_MULTIPLIER = 6.0
 # Step-2 spectral: set to 6.0 (per professor's recommendation — equivalent to MATLAB 'auto-' setting).
@@ -391,6 +391,7 @@ def apply_gedai(
     ch_names: List[str],
     l_freq: float,
     h_freq: float,
+    gedai_n_jobs: int | None = None,
 ) -> np.ndarray:
     """Apply GEDAI denoising using the official two-step spectral pipeline.
 
@@ -400,10 +401,14 @@ def apply_gedai(
       Step 2 — Spectral GEDAI (wavelet_level=5): frequency-band-specific
                denoising on the broadband-cleaned signal.
 
-    Uses float32 and n_jobs=1 for all steps to stay within 16 GB RAM limits.
+    Uses float32. Pass ``gedai_n_jobs`` from ``ExperimentConfig.memory.n_jobs`` on
+    workstations; omit or set 1 for low-RAM machines.
     Electrode montage is set on the MNE info so GEDAI's SENSAI algorithm has
     proper spatial coordinates for the leadfield computation.
     """
+    n_jobs = int(gedai_n_jobs) if gedai_n_jobs is not None else _DEFAULT_GEDAI_N_JOBS
+    n_jobs = max(1, n_jobs)
+
     if os.environ.get("PYGEDAI_FORCE_CPU", "").strip() == "1":
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
@@ -484,8 +489,8 @@ def apply_gedai(
     try:
         # Step 1: Broadband GEDAI
         gedai_broad = Gedai(wavelet_type="haar", wavelet_level=0)
-        gedai_broad.fit_raw(raw, noise_multiplier=GEDAI_BROADBAND_NOISE_MULTIPLIER, n_jobs=GEDAI_N_JOBS, verbose=False)
-        raw_broad_clean = gedai_broad.transform_raw(raw, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False)
+        gedai_broad.fit_raw(raw, noise_multiplier=GEDAI_BROADBAND_NOISE_MULTIPLIER, n_jobs=n_jobs, verbose=False)
+        raw_broad_clean = gedai_broad.transform_raw(raw, n_jobs=n_jobs, overlap=0.5, verbose=False)
         
         # Cleanup input raw to free 2.5GB
         del raw
@@ -493,8 +498,8 @@ def apply_gedai(
 
         # Step 2: Spectral GEDAI
         gedai_spectral = Gedai(wavelet_type="haar", wavelet_level=GEDAI_SPECTRAL_WAVELET_LEVEL, wavelet_low_cutoff=GEDAI_SPECTRAL_LOW_CUTOFF)
-        gedai_spectral.fit_raw(raw_broad_clean, noise_multiplier=GEDAI_SPECTRAL_NOISE_MULTIPLIER, n_jobs=GEDAI_N_JOBS, verbose=False)
-        raw_clean = gedai_spectral.transform_raw(raw_broad_clean, n_jobs=GEDAI_N_JOBS, overlap=0.5, verbose=False)
+        gedai_spectral.fit_raw(raw_broad_clean, noise_multiplier=GEDAI_SPECTRAL_NOISE_MULTIPLIER, n_jobs=n_jobs, verbose=False)
+        raw_clean = gedai_spectral.transform_raw(raw_broad_clean, n_jobs=n_jobs, overlap=0.5, verbose=False)
         
         del raw_broad_clean
         gc.collect()
@@ -523,6 +528,7 @@ def apply_gedai(
 
 def apply_gedai_from_continuous_raw(
     raw: "mne.io.BaseRaw",  # full continuous session, already loaded with montage
+    gedai_n_jobs: int | None = None,
 ) -> "mne.io.BaseRaw":
     """Apply the two-step spectral GEDAI pipeline to a continuous raw recording.
 
@@ -533,6 +539,9 @@ def apply_gedai_from_continuous_raw(
 
     Returns the cleaned MNE Raw object (same structure as input).
     """
+    n_jobs = int(gedai_n_jobs) if gedai_n_jobs is not None else _DEFAULT_GEDAI_N_JOBS
+    n_jobs = max(1, n_jobs)
+
     if os.environ.get("PYGEDAI_FORCE_CPU", "").strip() == "1":
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
@@ -566,10 +575,10 @@ def apply_gedai_from_continuous_raw(
         g_broad.fit_raw(
             raw,
             noise_multiplier=GEDAI_BROADBAND_NOISE_MULTIPLIER,
-            n_jobs=GEDAI_N_JOBS,
+            n_jobs=n_jobs,
             verbose=False,
         )
-        raw_broad = g_broad.transform_raw(raw, n_jobs=GEDAI_N_JOBS, verbose=False)
+        raw_broad = g_broad.transform_raw(raw, n_jobs=n_jobs, verbose=False)
 
         # Step 2: frequency-specific spectral denoising
         g_spec = Gedai(
@@ -580,10 +589,10 @@ def apply_gedai_from_continuous_raw(
         g_spec.fit_raw(
             raw_broad,
             noise_multiplier=GEDAI_SPECTRAL_NOISE_MULTIPLIER,
-            n_jobs=GEDAI_N_JOBS,
+            n_jobs=n_jobs,
             verbose=False,
         )
-        raw_clean = g_spec.transform_raw(raw_broad, n_jobs=GEDAI_N_JOBS, verbose=False)
+        raw_clean = g_spec.transform_raw(raw_broad, n_jobs=n_jobs, verbose=False)
         
         # GEDAI strips annotations when creating new RawArrays; restore them for epoching
         raw_clean.set_annotations(raw.annotations)
@@ -635,6 +644,7 @@ def preprocess_subject_data(
     tmax: float = 4.0,          # epoch window end
     y: np.ndarray = None,       # labels (used to re-epoch after GEDAI)
     dataset_name: str = "",     # dataset name to gate dataset-specific logic
+    gedai_n_jobs: int | None = None,
 ) -> np.ndarray:
     """Preprocess one subject once per denoising pipeline.
 
@@ -669,7 +679,7 @@ def preprocess_subject_data(
             import mne
             from mne import Epochs, events_from_annotations
             raw = load_continuous_raw_physionet(subject_id, runs=runs)
-            raw_clean = apply_gedai_from_continuous_raw(raw)
+            raw_clean = apply_gedai_from_continuous_raw(raw, gedai_n_jobs=gedai_n_jobs)
 
             # Bandpass the cleaned continuous raw in the decoding band
             raw_clean.filter(
@@ -704,5 +714,7 @@ def preprocess_subject_data(
             )
 
     # Fallback: epoch-level GEDAI (less accurate but works without raw EDFs)
-    return apply_gedai(X, sfreq, ch_names, l_freq, h_freq).astype(np.float32, copy=False)
+    return apply_gedai(
+        X, sfreq, ch_names, l_freq, h_freq, gedai_n_jobs=gedai_n_jobs
+    ).astype(np.float32, copy=False)
 

@@ -30,7 +30,11 @@ All implementations are designed for **local execution under 16 GB RAM**, with
 |--------|--------|
 | **This file** | Scientific design, configs, backbones, denoising, stats, plots, basic run steps |
 | **`TESTING.md`** | Pytest cases, how to run tests, synthetic vs real-data validation |
-| **`WINDOWS_SETUP.md`** | Windows / PowerShell, venv, `pip install`, paging file, batching long runs |
+| **`WINDOWS_SETUP.md`** | Windows / PowerShell, venv, `pip install`, paging file, full Alljoined download, shard runs, merge |
+| **`config/config_alljoined_workstation.yml`** | 20 subjects + `memory.n_jobs` for GEDAI on a workstation |
+| **`python -m src.merge_sharded_results`** | Merge `subject_level_performance.csv` from parallel `--results-root` shards |
+| **`docs/ALLJOINED_COMMANDS.md`** | Copy-paste: download 1 / smoke full / download 20 / full benchmark |
+| **`config/config_alljoined_smoke_1sub_full.yml`** | One subject, full denoising stack (baseline + ICALabel + GEDAI) for integration tests |
 | **`docs/FULL_RUN_RAM_EFFICIENT.md`** | Two-pass runs (baseline+ICA vs GEDAI) + merging results on 16 GB RAM |
 | **`config/`** | Example YAMLs: `config.yml`, PhysioNet/BNCI/Alljoined smoke and full configs |
 

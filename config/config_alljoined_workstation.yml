@@ -1,0 +1,55 @@
+# Alljoined-1.6M — full 20-subject run for a high-RAM / many-core workstation.
+# GEDAI uses memory.n_jobs threads inside fit_raw/transform_raw.
+#
+# Parallel strategy: run 4 shards (e.g. scripts/run_alljoined_shards.ps1), each with
+# disjoint --subjects and --results-root, then merge:
+#   python -m src.merge_sharded_results --shards results/alljoined_w1 ... results/alljoined_w4 \
+#     --out results/alljoined_merged --n-pipeline-perm 10000
+#
+# Download all EDFs first (10-day window friendly):
+#   python -m src.data.prepare_alljoined --subjects 1 2 ... 20 --all-edfs --workers 3 --out-root data/alljoined/processed
+
+data_root: ./data/alljoined/processed
+results_root: ./results/alljoined_workstation
+dataset_label: alljoined_1.6m
+
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 1.0
+  h_freq: 40.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+permutation:
+  n_subject_level: 1000
+  n_pipeline_level: 10000
+  adaptive_step_up: true
+
+memory:
+  float_dtype: float32
+  # GEDAI internal parallelism; with 4 shard processes use ~4 here (4×4≈16 threads).
+  n_jobs: 4
+  save_models: true
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_asr: false
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["Cz", "O1", "O2", "C3", "C4"]
+  segment_duration_s: 2.0
+
+generate_plots: true
+plot_subjects: [1, 2, 3]

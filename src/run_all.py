@@ -31,9 +31,18 @@ def main() -> None:
         default=None,
         help="Override: use specific subject IDs (e.g. --subjects 6 7 8 9 10).",
     )
+    parser.add_argument(
+        "--results-root",
+        type=str,
+        default=None,
+        help="Override results_root from YAML (for parallel shard runs).",
+    )
     args = parser.parse_args()
 
     cfg = ExperimentConfig.from_yaml(args.config)
+
+    if args.results_root is not None:
+        cfg.results_root = Path(args.results_root)
     
     if args.subjects is not None:
         cfg.subjects = list(args.subjects)

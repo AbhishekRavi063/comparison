@@ -57,6 +57,7 @@ def main() -> None:
                 l_freq=cfg.bandpass.l_freq,
                 h_freq=cfg.bandpass.h_freq,
                 denoising=pipeline,
+                gedai_n_jobs=cfg.memory.n_jobs,
             )
             for backbone in backbones:
                 if backbone == "csp":
