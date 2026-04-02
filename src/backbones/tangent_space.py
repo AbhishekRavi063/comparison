@@ -29,8 +29,12 @@ def _riemannian_mean(covs: np.ndarray) -> np.ndarray:
     """Regularized mean covariance (float32); diagonal loading for positive definiteness."""
     C = np.mean(covs, axis=0).astype(np.float32)
     C = 0.5 * (C + C.T)
-    eps = 1e-6 * np.trace(C) / C.shape[0]
-    C = (C + eps * np.eye(C.shape[0], dtype=np.float32)).astype(np.float32)
+    # Stronger loading for short-epoch / high-channel consumer EEG (avoids singular logm).
+    tr = float(np.trace(C))
+    n = C.shape[0]
+    scale = tr / n if tr > 1e-12 else 1.0
+    eps = max(1e-10 * scale, 1e-5 * scale)
+    C = (C + eps * np.eye(n, dtype=np.float32)).astype(np.float32)
     return C
 
 
@@ -45,8 +49,14 @@ def _tangent_space_projection(covs: np.ndarray, C_ref: np.ndarray) -> np.ndarray
     
     logs = np.empty_like(T, dtype=np.float32)
     for i in range(len(T)):
-        # Compute logm in float64 precision to avoid warnings/inaccuracies
-        l = logm(T[i].astype(np.float64)).real
+        # Symmetrize + jitter so logm is defined (trial covs can be near-singular after whitening).
+        Ti = T[i].astype(np.float64)
+        Ti = 0.5 * (Ti + Ti.T)
+        n_ch = Ti.shape[0]
+        tr = float(np.trace(Ti))
+        scale = tr / n_ch if tr > 1e-12 else 1.0
+        Ti = Ti + (1e-8 * scale) * np.eye(n_ch, dtype=np.float64)
+        l = logm(Ti).real
         logs[i] = l.astype(np.float32)
         
     # Flatten upper triangle (including diagonal)
@@ -105,7 +115,9 @@ def run_tangent_space_pipeline(
             X_test_proc = X_all_clean[len(X_train_bp) :]
         else:  # gedai
             X_all = np.concatenate([X_train_bp, X_test_bp], axis=0)
-            X_all_clean = apply_gedai(X_all, sfreq, ch_names)
+            X_all_clean = apply_gedai(
+                X_all, sfreq, ch_names, l_freq, h_freq
+            )
             X_train_proc = X_all_clean[: len(X_train_bp)]
             X_test_proc = X_all_clean[len(X_train_bp) :]
 
@@ -195,7 +207,7 @@ def fit_tangent_model(
     elif denoising == "icalabel":
         X_proc = apply_icalabel(X_bp, sfreq, ch_names, l_freq, h_freq)
     else:
-        X_proc = apply_gedai(X_bp, sfreq, ch_names)
+        X_proc = apply_gedai(X_bp, sfreq, ch_names, l_freq, h_freq)
     covs = _covariance_matrices(X_proc)
     C_ref = _riemannian_mean(covs)
     X_feat = _tangent_space_projection(covs, C_ref)
