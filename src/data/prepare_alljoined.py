@@ -126,11 +126,12 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
     all_X = []
     all_y = []
     
-    # 1 second for a healthy chunk
-    tmin, tmax = 0.0, 1.0 
-    
+    # Fixed-length epochs (samples) so np.stack never fails across sessions/blocks.
+    tmin, tmax = 0.0, 1.0
+    n_samples = int(round(tmax * TARGET_SFREQ))
+
     print(f"  Epoching Subject {subject}...", flush=True)
-    
+
     for edf_path in edf_paths:
         try:
             raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
@@ -172,17 +173,18 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
                 
             label = match.iloc[0]['category_num']
             
-            start_samp = raw.time_as_index(onset)[0]
-            stop_samp = raw.time_as_index(onset + tmax)[0]
-            
+            start_samp = int(raw.time_as_index(onset)[0])
+            stop_samp = start_samp + n_samples
             if start_samp < 0 or stop_samp > raw.n_times:
                 continue
-                
+
             chunk = raw.get_data(start=start_samp, stop=stop_samp)
-            if chunk.shape[1] < int(tmax * TARGET_SFREQ):
+            if chunk.shape[1] < n_samples:
                 continue
-            
-            all_X.append(chunk)
+            if chunk.shape[1] > n_samples:
+                chunk = chunk[:, :n_samples]
+
+            all_X.append(chunk.astype(np.float32, copy=False))
             all_y.append(label)
             matches_found += 1
             
