@@ -4,7 +4,7 @@
 # Parallel strategy: run 4 shards (e.g. scripts/run_alljoined_shards.ps1), each with
 # disjoint --subjects and --results-root, then merge:
 #   python -m src.merge_sharded_results --shards results/alljoined_w1 ... results/alljoined_w4 \
-#     --out results/alljoined_merged --n-pipeline-perm 10000
+#     --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai
 #
 # Download all EDFs first (10-day window friendly):
 #   python -m src.data.prepare_alljoined --subjects 1 2 ... 20 --all-edfs --workers 3 --out-root data/alljoined/processed
@@ -43,7 +43,7 @@ backbones:
 
 denoising:
   use_baseline: true
-  use_icalabel: true
+  use_icalabel: false
   use_asr: false
   use_gedai: true
 
