@@ -119,7 +119,7 @@ def main() -> None:
     parser.add_argument(
         "configs",
         nargs="+",
-        help="Paths to config YAML files (one per dataset), e.g. config/config_full_subject_physionet_example.yml config/config_full_subject_bnci_example.yml",
+        help="Paths to config YAML files (one per dataset), e.g. config/config_alljoined_workstation.yml",
     )
     parser.add_argument(
         "--skip-experiment",

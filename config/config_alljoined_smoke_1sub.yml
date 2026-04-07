@@ -21,8 +21,12 @@ cv:
   shuffle: true
   random_state: 42
 
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
 permutation:
-  n_subject_level: 20
+  n_subject_level: 0
   n_pipeline_level: 200
   # Smoke test: never trigger adaptive step-up (default would add up to 10k extra null
   # permutations when p is ~0.04-0.06 - looks "stuck" and can take many hours).

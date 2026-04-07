@@ -44,4 +44,4 @@ if ($procs.Count -eq 0) { throw "No processes started" }
 Wait-Process -InputObject $procs
 $shardDirs = 1..($procs.Count) | ForEach-Object { "$ResultsPrefix$_" }
 Write-Host "All shards finished. Merge with:"
-Write-Host "python -m src.merge_sharded_results --shards $($shardDirs -join ' ') --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai"
+Write-Host "python -m src.merge_sharded_results --shards $($shardDirs -join ' ') --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai --pipeline-comparison-method mann_whitney"

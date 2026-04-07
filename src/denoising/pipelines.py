@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 import numpy as np
 from scipy.signal import butter, filtfilt
@@ -385,6 +386,138 @@ def apply_asr(
     return bandpass_filter(X_clean, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
 
 
+def _run_pylossless_on_continuous_raw(raw: "mne.io.BaseRaw") -> "mne.io.BaseRaw":
+    """Default PyLossless config and default ``RejectionPolicy`` (public pipeline API)."""
+    from pylossless import Config, LosslessPipeline
+
+    try:
+        from pylossless import RejectionPolicy
+    except ImportError:
+        from pylossless.config import RejectionPolicy
+
+    cfg = Config().load_default()
+    pipeline = LosslessPipeline(config=cfg)
+    pipeline.run_with_raw(raw.copy())
+    return RejectionPolicy().apply(pipeline, version_mismatch="warning")
+
+
+def apply_pylossless(
+    X: np.ndarray,
+    sfreq: float,
+    ch_names: List[str],
+    l_freq: float,
+    h_freq: float,
+) -> np.ndarray:
+    """PyLossless with trials concatenated into one continuous ``Raw`` (same idea as ASR).
+
+    For Alljoined, prefer ``<data_root>/pylossless_manifest/subject_<id>.txt`` so each EDF
+    block is cleaned continuously before epoching (see ``apply_pylossless_alljoined_via_manifest``).
+    """
+    try:
+        import mne
+        import pylossless  # noqa: F401 — presence check
+    except Exception as exc:  # pragma: no cover
+        import warnings
+        warnings.warn(
+            f"PyLossless requires `mne` and `pylossless` ({exc}); using bandpass-only."
+        )
+        return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+
+    X = np.asarray(X, dtype=np.float32)
+    n_trials, n_channels, n_times = X.shape
+    info = mne.create_info(ch_names=list(ch_names), sfreq=float(sfreq), ch_types="eeg")
+    X_concat = X.transpose(1, 0, 2).reshape(n_channels, n_trials * n_times)
+    raw = mne.io.RawArray(X_concat, info, verbose="ERROR")
+    try:
+        raw.set_montage("standard_1020", on_missing="ignore", verbose="ERROR")
+    except Exception:
+        pass
+
+    try:
+        raw_clean = _run_pylossless_on_continuous_raw(raw)
+        X_clean_concat = raw_clean.get_data().astype(np.float32, copy=False)
+        X_clean = (
+            X_clean_concat.reshape(n_channels, n_trials, n_times)
+            .transpose(1, 0, 2)
+            .astype(np.float32, copy=False)
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(f"PyLossless failed ({e}); falling back to bandpass-only.")
+        return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+
+    return bandpass_filter(X_clean, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+
+
+def _read_alljoined_pylossless_manifest(
+    data_root: Path, subject_id: int
+) -> Optional[Tuple[str, List[str]]]:
+    """Parse ``<data_root>/pylossless_manifest/subject_<id>.txt``: line0=meta parquet, rest=EDFs."""
+    manifest = Path(data_root) / "pylossless_manifest" / f"subject_{subject_id}.txt"
+    if not manifest.is_file():
+        return None
+    lines = [ln.strip() for ln in manifest.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+    base = manifest.parent
+
+    def resolve_one(s: str) -> str:
+        q = Path(s).expanduser()
+        return str(q.resolve() if q.is_absolute() else (base / q).resolve())
+
+    return resolve_one(lines[0]), [resolve_one(x) for x in lines[1:]]
+
+
+def apply_pylossless_alljoined_via_manifest(
+    subject_id: int,
+    data_root: Path,
+    ch_names: List[str],
+    l_freq: float,
+    h_freq: float,
+    sfreq: float,
+    n_trials_expected: int,
+) -> Optional[np.ndarray]:
+    """PyLossless on each EDF block, then the same pulse-epoching as ``prepare_alljoined``."""
+    parsed = _read_alljoined_pylossless_manifest(data_root, subject_id)
+    if parsed is None:
+        return None
+    meta_path, edf_paths = parsed
+
+    from ..data.prepare_alljoined import epoch_alljoined_trials_from_edfs
+
+    def raw_hook(raw: "mne.io.BaseRaw") -> "mne.io.BaseRaw":
+        return _run_pylossless_on_continuous_raw(raw)
+
+    try:
+        all_X, _all_y = epoch_alljoined_trials_from_edfs(
+            edf_paths,
+            meta_path,
+            list(ch_names),
+            target_sfreq=float(sfreq),
+            t_epoch=(0.0, 1.0),
+            raw_hook=raw_hook,
+            log_prefix="    [PyLossless] ",
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(
+            f"PyLossless Alljoined manifest path failed ({e}); falling back to concat PyLossless."
+        )
+        return None
+
+    if not all_X:
+        return None
+    X = np.stack(all_X).astype(np.float32, copy=False)
+    if X.shape[0] != n_trials_expected:
+        import warnings
+        warnings.warn(
+            f"PyLossless manifest produced {X.shape[0]} trials but NPZ has "
+            f"{n_trials_expected}; falling back to concat PyLossless."
+        )
+        return None
+    return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+
+
 def apply_gedai(
     X: np.ndarray,
     sfreq: float,
@@ -645,6 +778,7 @@ def preprocess_subject_data(
     y: np.ndarray = None,       # labels (used to re-epoch after GEDAI)
     dataset_name: str = "",     # dataset name to gate dataset-specific logic
     gedai_n_jobs: int | None = None,
+    data_root: Path | None = None,
 ) -> np.ndarray:
     """Preprocess one subject once per denoising pipeline.
 
@@ -653,8 +787,13 @@ def preprocess_subject_data(
     the correct usage of GEDAI (continuous raw, not concatenated short trials).
 
     Falls back to the old epoch-level GEDAI for non-PhysioNet datasets.
+
+    For PyLossless on Alljoined, set ``data_root`` and add
+    ``<data_root>/pylossless_manifest/subject_<id>.txt`` (line 1 = metadata parquet, following lines =
+    EDF paths) to run default PyLossless **per EDF** before epoching; otherwise trials are concatenated
+    into one continuous ``Raw`` (cf. ASR).
     """
-    if denoising not in {"baseline", "icalabel", "gedai", "asr"}:
+    if denoising not in {"baseline", "icalabel", "gedai", "asr", "pylossless"}:
         raise ValueError(f"Unknown denoising strategy: {denoising}")
 
     # X_bp = bandpass_filter(X, sfreq, l_freq, h_freq) # REMOVED TO SAVE RAM
@@ -669,6 +808,29 @@ def preprocess_subject_data(
     if denoising == "icalabel":
         # Delete original X immediately if possible or rely on apply_icalabel to be smart
         return apply_icalabel(X, sfreq, ch_names, l_freq, h_freq).astype(
+            np.float32, copy=False
+        )
+
+    if denoising == "pylossless":
+        X = np.asarray(X, dtype=np.float32)
+        if (
+            subject_id is not None
+            and data_root is not None
+            and dataset_name
+            and "alljoined" in dataset_name.lower()
+        ):
+            X_m = apply_pylossless_alljoined_via_manifest(
+                int(subject_id),
+                Path(data_root),
+                ch_names,
+                l_freq,
+                h_freq,
+                float(sfreq),
+                n_trials_expected=int(X.shape[0]),
+            )
+            if X_m is not None:
+                return X_m.astype(np.float32, copy=False)
+        return apply_pylossless(X, sfreq, ch_names, l_freq, h_freq).astype(
             np.float32, copy=False
         )
 

@@ -19,7 +19,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="config/config.yml",
+        default="config/config_alljoined_smoke_1sub.yml",
         help="Path to YAML configuration file.",
     )
     args = parser.parse_args()
@@ -40,6 +40,10 @@ def main() -> None:
         pipelines.append("icalabel")
     if cfg.denoising.use_gedai:
         pipelines.append("gedai")
+    if getattr(cfg.denoising, "use_pylossless", False):
+        pipelines.append("pylossless")
+    if getattr(cfg.denoising, "use_asr", False):
+        pipelines.append("asr")
 
     backbones = []
     if cfg.backbones.use_csp:
@@ -57,7 +61,10 @@ def main() -> None:
                 l_freq=cfg.bandpass.l_freq,
                 h_freq=cfg.bandpass.h_freq,
                 denoising=pipeline,
+                subject_id=sid if pipeline in ("gedai", "pylossless") else None,
+                dataset_name=cfg.dataset_label or "",
                 gedai_n_jobs=cfg.memory.n_jobs,
+                data_root=cfg.data_root,
             )
             for backbone in backbones:
                 if backbone == "csp":

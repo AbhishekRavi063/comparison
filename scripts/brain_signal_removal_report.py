@@ -82,7 +82,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--config",
-        default="config/config_real_physionet_full.yml",
+        default="config/config_alljoined_workstation.yml",
         help="Config used for the run (same data_root, denoising flags).",
     )
     parser.add_argument(

@@ -57,7 +57,7 @@ def _test_config(tmp_path: Path, baseline_only: bool = False) -> ExperimentConfi
     data_root = tmp_path / "data"
     results_root = tmp_path / "results"
     data_root.mkdir(parents=True, exist_ok=True)
-    cfg = ExperimentConfig.from_yaml(PROJECT_ROOT / "config" / "config_test.yml")
+    cfg = ExperimentConfig.from_yaml(PROJECT_ROOT / "config" / "config_alljoined_test.yml")
     cfg.data_root = data_root
     cfg.results_root = results_root
     if baseline_only:
@@ -138,7 +138,7 @@ def test_case_3_plots(tmp_path: Path) -> None:
     import src.run_plots as rp
     orig_parse = rp.main
     def run_plots_with_config():
-        cfg = ExperimentConfig.from_yaml(PROJECT_ROOT / "config" / "config_test.yml")
+        cfg = ExperimentConfig.from_yaml(PROJECT_ROOT / "config" / "config_alljoined_test.yml")
         cfg.data_root = data_root
         cfg.results_root = results_root
         subject_csv = cfg.results_root / "tables" / "subject_level_performance.csv"

@@ -51,73 +51,25 @@ pytest tests/test_integration.py -v -k "not case_2"
 
 ## Test config
 
-- **`config/config_test.yml`** is used by integration tests (overridden `data_root` and `results_root` point to a temp dir).
+- **`config/config_alljoined_test.yml`** is used by integration tests (overridden `data_root` and `results_root` point to a temp dir).
 - It uses **2 subjects**, **small permutations** (`n_subject_level: 15`, `n_pipeline_level: 50`) so tests finish quickly.
 - Denoising: **baseline** always; **ICALabel** only in case 2; **GEDAI** off in tests.
 
 ---
 
-## 2. Full-subject testing (real datasets)
+## 2. Full-subject testing (real data)
 
-To test with **real EEG data and full subject counts**, you must use the **real datasets** and run the pipeline yourself (no pytest).
+The checked-in YAML files under `config/config_alljoined_*.yml` target **Alljoined-1.6M**
+(`data/alljoined/processed`). Prepare data with `python -m src.data.prepare_alljoined …`,
+then run e.g. `python -m src.run_all --config config/config_alljoined_workstation.yml`.
 
-### Datasets used for full-subject testing
-
-| Dataset | Subjects | Preparation script | Config example |
-|--------|----------|--------------------|-----------------|
-| **PhysioNet EEG Motor Movement/Imagery (EEGBCI)** | 1–109 | `prepare_physionet_eegbci.py` | `config/config_full_subject_physionet_example.yml` |
-| **BNCI 2014-001 (BCI Competition IV 2a)** | 1–9 | `prepare_bnci2014_001.py` | `config/config_full_subject_bnci_example.yml` |
-
-### PhysioNet EEGBCI (full subjects)
-
-1. **Prepare data** (downloads from PhysioNet; use a subset first, then full list):
-
-   ```bash
-   # Sanity check: 5 subjects
-   python -m src.data.prepare_physionet_eegbci --subjects 1 2 3 4 5 --out-root data/physionet_eegbci
-
-   # Full subject set (all 109)
-   python -m src.data.prepare_physionet_eegbci --subjects $(seq 1 109) --out-root data/physionet_eegbci
-   ```
-
-2. **Point config** at that folder and the same subject list. Either copy `config/config_full_subject_physionet_example.yml` and set `data_root` / `subjects`, or edit `config/config.yml`:
-
-   ```yaml
-   data_root: ./data/physionet_eegbci
-   subjects: [1, 2, 3, 4, 5]   # or 1–109 for full
-   ```
-
-3. **Run full pipeline**:
-
-   ```bash
-   python -m src.run_all --config config/config_full_subject_physionet_example.yml
-   python -m src.run_plots --config config/config_full_subject_physionet_example.yml
-   python -m src.run_signal_integrity --config config/config_full_subject_physionet_example.yml --subject 1 --trial 0
-   ```
-
-4. Check **results**: `results/tables/subject_level_performance.csv`, `results/stats/pipeline_comparisons.csv`, `results/models/`, `results/figures/`.
-
-5. **Validation summary** is printed at the end of `run_full_test` (mean accuracy per pipeline, p-values, Cohen's d, % improved by GEDAI). To re-print from existing results: `python scripts/validate_5subjects.py --results-dir results/physionet_5subjects`.
-
-### BNCI 2014-001 (full 9 subjects)
-
-1. **Prepare data** (MOABB will download):
-
-   ```bash
-   python -m src.data.prepare_bnci2014_001 --subjects 1 2 3 4 5 6 7 8 9 --out-root data/bnci2014_001
-   ```
-
-2. **Run** with the BNCI example config:
-
-   ```bash
-   python -m src.run_all --config config/config_full_subject_bnci_example.yml
-   python -m src.run_plots --config config/config_full_subject_bnci_example.yml
-   ```
+To benchmark **other** `.npz` datasets, copy any `config_alljoined_*.yml`, set `data_root` and
+`subjects` to your prepared folder, and keep the same schema.
 
 ### Summary
 
 - **Pytest** = synthetic data only; fast; no real dataset.
-- **Full-subject test** = real **PhysioNet EEGBCI** and/or **BNCI 2014-001**; prepare data with the scripts above, then run the **full test** (see below) so each dataset is evaluated independently and cross-dataset consistency is reported without pooling.
+- **Full runs** = use an Alljoined config (or a copy with your `data_root`).
 
 ---
 
@@ -139,22 +91,15 @@ For **each** dataset (e.g. PhysioNet, then BNCI):
 - **TEST BLOCK 4 — Backbone interaction:** Does denoising help CSP more than Tangent (or vice versa)? In `stats/backbone_interaction.csv`.
 - **TEST BLOCK 5 — Physiological integrity:** Pre–post overlay and PSD (e.g. C3/C4, alpha/beta). In `figures/signal_integrity/`.
 
-### Single command: run full test on both datasets
+### `run_full_test` with multiple configs
 
-Use **two configs** (one per dataset), each with its own `data_root` and `results_root` (and optional `dataset_label`):
+Pass one or more YAML paths (each with its own `data_root` / `results_root`), for example:
 
 ```bash
-# 1. Prepare both datasets (see section 2 above)
-# 2. Run full test: Dataset A then Dataset B, then cross-dataset report
 python -m src.run_full_test \
-  config/config_full_subject_physionet_example.yml \
-  config/config_full_subject_bnci_example.yml \
-  --out-report results/cross_dataset_consistency_report.md
+  config/config_alljoined_workstation.yml \
+  --out-report results/alljoined_report.md
 ```
-
-- Results for PhysioNet: `results/physionet_eegbci/` (tables, stats, models, figures).
-- Results for BNCI: `results/bnci2014_001/`.
-- Cross-dataset report (no pooling): `results/cross_dataset_consistency_report.md`.
 
 Options:
 

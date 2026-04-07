@@ -28,4 +28,4 @@ while (( idx <= LAST )); do
 done
 
 for pid in "${pids[@]}"; do wait "$pid"; done
-echo "Merge: python -m src.merge_sharded_results --shards ${PREFIX}1 ... --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai"
+echo "Merge: python -m src.merge_sharded_results --shards ${PREFIX}1 ... --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai --pipeline-comparison-method mann_whitney"

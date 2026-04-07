@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
-from scipy.stats import permutation_test
+from scipy.stats import binomtest, mannwhitneyu, permutation_test, wilcoxon
 
 
 @dataclass
@@ -18,6 +18,10 @@ class SubjectPerformance:
     p_empirical: float
     alpha_ratio: float = 1.0
     beta_ratio: float = 1.0
+    # Filled when subject_chance_method == binomial (exact test on pooled CV test predictions).
+    pooled_test_correct: int | None = None
+    pooled_test_total: int | None = None
+    p_vs_chance_method: str = "permutation"
 
 
 def empirical_chance_p_value(
@@ -27,6 +31,57 @@ def empirical_chance_p_value(
     """Compute empirical p-value vs chance from a null distribution."""
     null_arr = np.asarray(null_accuracies)
     return float(np.mean(null_arr >= acc_real))
+
+
+def binomial_vs_chance_p_value(
+    n_correct: int,
+    n_total: int,
+    n_classes: int,
+) -> float:
+    """Exact binomial test: accuracy vs uniform chance (1/K). One-sided greater.
+
+    Appropriate when the number of pooled test predictions is large (professor guidance:
+    label-shuffle permutations can be skipped).
+    """
+    if n_total < 1 or n_classes < 2:
+        return 1.0
+    p0 = 1.0 / float(n_classes)
+    r = binomtest(int(n_correct), int(n_total), p=p0, alternative="greater")
+    return float(r.pvalue)
+
+
+def mann_whitney_pipeline_p_value(
+    scores1: Sequence[float],
+    scores2: Sequence[float],
+) -> float:
+    """Two-sample Mann–Whitney U (independent groups). Same length does not imply pairing."""
+    x1 = np.asarray(scores1, dtype=float)
+    x2 = np.asarray(scores2, dtype=float)
+    if len(x1) < 2 or len(x2) < 2:
+        return 1.0
+    r = mannwhitneyu(x1, x2, alternative="two-sided")
+    return float(r.pvalue)
+
+
+def wilcoxon_paired_pipeline_p_value(
+    scores1: Sequence[float],
+    scores2: Sequence[float],
+) -> float:
+    """Paired Wilcoxon signed-rank on subject-level means (same subjects, two pipelines)."""
+    x1 = np.asarray(scores1, dtype=float)
+    x2 = np.asarray(scores2, dtype=float)
+    n = min(len(x1), len(x2))
+    if n < 2:
+        return 1.0
+    x1, x2 = x1[:n], x2[:n]
+    diff = x1 - x2
+    if np.allclose(diff, 0):
+        return 1.0
+    try:
+        r = wilcoxon(x1, x2, alternative="two-sided", zero_method="wilcox")
+    except TypeError:
+        r = wilcoxon(x1, x2, alternative="two-sided")
+    return float(r.pvalue)
 
 
 def cohen_d_pooled(

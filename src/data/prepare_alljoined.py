@@ -24,7 +24,7 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Set, TypeVar
+from typing import Callable, List, Optional, Set, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -134,80 +134,80 @@ def _common_eeg_channel_order(edf_paths: List[str]) -> List[str]:
     return [c for c in EEG_CHANNELS]
 
 
-def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root: Path):
-    """Epochs data for a single subject and saves to NPZ."""
+def epoch_alljoined_trials_from_edfs(
+    edf_paths: List[str],
+    meta_path: str,
+    ch_use: List[str],
+    *,
+    target_sfreq: float = TARGET_SFREQ,
+    t_epoch: Tuple[float, float] = (0.0, 1.0),
+    raw_hook: Optional[Callable[[mne.io.BaseRaw], mne.io.BaseRaw]] = None,
+    log_prefix: str = "",
+) -> Tuple[List[np.ndarray], List[int]]:
+    """Extract fixed-length trials from Alljoined EDFs aligned with metadata.
+
+    Parameters
+    ----------
+    raw_hook
+        If set, called on each raw after ``pick_channels`` and resample to
+        ``target_sfreq`` (e.g. PyLossless on continuous data before epoching).
+    """
     df_meta = pd.read_parquet(meta_path)
-    # Extract image_id from image_path (e.g. /.../16641.jpg -> 16641)
-    df_meta['image_id_val'] = df_meta['image_path'].apply(
+    df_meta["image_id_val"] = df_meta["image_path"].apply(
         lambda x: int(Path(x).stem) if pd.notnull(x) else -1
     )
-    
-    all_X = []
-    all_y = []
-    
-    # Fixed-length epochs (samples) so np.stack never fails across sessions/blocks.
-    tmin, tmax = 0.0, 1.0
-    n_samples = int(round(tmax * TARGET_SFREQ))
 
-    ch_use = _common_eeg_channel_order(edf_paths)
-    if len(ch_use) < len(EEG_CHANNELS):
-        print(
-            f"  Note: using {len(ch_use)} channels common to all blocks (not {len(EEG_CHANNELS)}).",
-            flush=True,
-        )
-
-    print(f"  Epoching Subject {subject}...", flush=True)
+    all_X: List[np.ndarray] = []
+    all_y: List[int] = []
+    tmin, tmax = t_epoch
+    n_samples = int(round((tmax - tmin) * target_sfreq))
 
     for edf_path in edf_paths:
         try:
             raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
         except Exception as e:
-            print(f"    [Skip] Error reading {Path(edf_path).name}: {e}")
+            print(f"{log_prefix}[Skip] Error reading {Path(edf_path).name}: {e}")
             continue
 
         missing = [c for c in ch_use if c not in raw.ch_names]
         if missing:
             print(
-                f"    [Skip] {Path(edf_path).name}: missing channels {missing[:5]}{'...' if len(missing) > 5 else ''}",
+                f"{log_prefix}[Skip] {Path(edf_path).name}: missing channels "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''}",
                 flush=True,
             )
             raw.close()
             continue
 
         raw.pick_channels(ch_use)
-        
-        # Resample to 250Hz immediately to save memory
-        if abs(raw.info['sfreq'] - TARGET_SFREQ) > 0.1:
-            raw.resample(TARGET_SFREQ, verbose=False)
-        
-        # Parse annotations: "partition, image_id, sequence_id, sequence_image_id"
+        if abs(raw.info["sfreq"] - target_sfreq) > 0.1:
+            raw.resample(target_sfreq, verbose=False)
+
+        if raw_hook is not None:
+            raw = raw_hook(raw)
+
         annots = raw.annotations
         matches_found = 0
-        for i, ann in enumerate(annots):
-            desc = ann['description']
+        for ann in annots:
+            desc = ann["description"]
             if not desc.startswith("stim_"):
                 continue
-            
+
             parts = [p.strip() for p in desc.split(",")]
             if len(parts) < 2:
                 continue
-            
-            # The second part is image_id (e.g. 16558)
+
             try:
                 ann_image_id = int(parts[1])
             except ValueError:
                 continue
-            
-            onset = ann['onset']
-            
-            # Find matching metadata row based on image_id
-            match = df_meta[df_meta['image_id_val'] == ann_image_id]
-            
+
+            onset = ann["onset"]
+            match = df_meta[df_meta["image_id_val"] == ann_image_id]
             if match.empty:
                 continue
-                
-            label = match.iloc[0]['category_num']
-            
+
+            label = int(match.iloc[0]["category_num"])
             start_samp = int(raw.time_as_index(onset)[0])
             stop_samp = start_samp + n_samples
             if start_samp < 0 or stop_samp > raw.n_times:
@@ -222,11 +222,38 @@ def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root
             all_X.append(chunk.astype(np.float32, copy=False))
             all_y.append(label)
             matches_found += 1
-            
-        print(f"    Processed {Path(edf_path).name}: {matches_found} matches.", flush=True)
+
+        print(
+            f"{log_prefix}Processed {Path(edf_path).name}: {matches_found} matches.",
+            flush=True,
+        )
         raw.close()
         del raw
         gc.collect()
+
+    return all_X, all_y
+
+
+def process_subject(subject: int, edf_paths: List[str], meta_path: str, out_root: Path):
+    """Epochs data for a single subject and saves to NPZ."""
+    ch_use = _common_eeg_channel_order(edf_paths)
+    if len(ch_use) < len(EEG_CHANNELS):
+        print(
+            f"  Note: using {len(ch_use)} channels common to all blocks (not {len(EEG_CHANNELS)}).",
+            flush=True,
+        )
+
+    print(f"  Epoching Subject {subject}...", flush=True)
+
+    all_X, all_y = epoch_alljoined_trials_from_edfs(
+        edf_paths,
+        meta_path,
+        ch_use,
+        target_sfreq=TARGET_SFREQ,
+        t_epoch=(0.0, 1.0),
+        raw_hook=None,
+        log_prefix="    ",
+    )
 
     if not all_X:
         print(f"  [Error] No trials found for Subject {subject}.")

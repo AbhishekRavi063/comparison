@@ -1,8 +1,9 @@
-# Test config: few subjects, small permutations, for fast integration tests.
-# Override data_root and results_root when running tests (e.g. tmp_path).
+# Synthetic / CI tests: integration tests override data_root and results_root to tmp_path.
+# Named for Alljoined-only config layout (dataset_label matches other alljoined YAMLs).
 
 data_root: ./data
 results_root: ./results
+dataset_label: alljoined_test
 
 subjects: [1, 2]
 
@@ -17,9 +18,12 @@ cv:
   shuffle: true
   random_state: 42
 
-# Minimal for quick tests
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
 permutation:
-  n_subject_level: 15
+  n_subject_level: 0
   n_pipeline_level: 50
 
 memory:
@@ -33,8 +37,10 @@ backbones:
 
 denoising:
   use_baseline: true
-  use_icalabel: true   # set false in tests that skip MNE
+  use_icalabel: true
   use_gedai: false
+  use_asr: false
+  use_pylossless: false
 
 signal_integrity:
   channels_of_interest: ["Ch0", "Ch1"]

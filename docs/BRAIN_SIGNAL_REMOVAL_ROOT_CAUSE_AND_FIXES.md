@@ -76,7 +76,7 @@ This document lists **root causes** and **possibilities** for denoising pipeline
 
 1. **Run preservation check (one subject)**  
    ```bash
-   python scripts/check_brain_signal_preservation.py --config config/config_real_physionet_5subjects_quick.yml --subject 1 --channel C3
+   python scripts/check_brain_signal_preservation.py --config config/config_alljoined_smoke_1sub.yml --subject 1 --channel Cz
    ```  
    Confirm trial-averaged and per-trial minimum ratios ≥ 0.75 (or that fallback to bandpass occurs when not).
 

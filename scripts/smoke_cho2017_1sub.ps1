@@ -15,7 +15,7 @@ Write-Host "==> Preparing Cho2017 subject 1 (MOABB download + .npz)..."
 python -m src.data.prepare_cho2017 --subjects 1 --out-root data/cho2017/processed
 
 if (-not $env:MPLBACKEND) { $env:MPLBACKEND = "Agg" }
-Write-Host "==> Running Cho2017 smoke (config/config_cho2017_smoke_1sub.yml)..."
-python -m src.run_all --config config/config_cho2017_smoke_1sub.yml
+Write-Host "==> Running Alljoined 1-sub smoke (config/config_alljoined_smoke_1sub.yml)..."
+python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
 
 Write-Host "==> Done. Results: results/cho2017_smoke_1sub/"

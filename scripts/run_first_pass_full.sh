@@ -19,7 +19,7 @@ N_SIG="${N_SIG:-1}"
 # Brain signal report: how many subjects to check (10 = quick, 109 = full)
 N_REPORT="${N_REPORT:-10}"
 
-CONFIG="config/config_real_physionet_full.yml"
+CONFIG="config/config_alljoined_workstation.yml"
 RESULTS_DIR="results/physionet_full"
 
 echo "=============================================="

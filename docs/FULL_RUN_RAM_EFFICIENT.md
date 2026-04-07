@@ -24,16 +24,16 @@ source .venv/bin/activate
 export MPLBACKEND=Agg
 
 # Full 109 subjects, baseline + ICALabel only (no GEDAI)
-python -m src.run_full_test config/config_real_physionet_full.yml
+python -m src.run_full_test config/config_alljoined_workstation.yml
 ```
 
-- **Config:** `config/config_real_physionet_full.yml` (already has `use_gedai: false`).
+- **Config:** `config/config_alljoined_workstation.yml` (already has `use_gedai: false`).
 - **Output:** `results/physionet_full/` (tables, stats, figures, models for **baseline** and **icalabel** only).
 
 Optional: skip overlay/PSD to save time:
 
 ```bash
-python -m src.run_full_test config/config_real_physionet_full.yml --no-signal-integrity
+python -m src.run_full_test config/config_alljoined_workstation.yml --no-signal-integrity
 ```
 
 ---
@@ -44,10 +44,10 @@ Uses the **GEDAI-only** config. Same 109 subjects, same CV (same `random_state`)
 
 ```bash
 # GEDAI-only pass (same subjects, same CV splits)
-python -m src.run_full_test config/config_real_physionet_full_gedai_only.yml --no-signal-integrity
+python -m src.run_full_test config/config_alljoined_workstation.yml --no-signal-integrity
 ```
 
-- **Config:** `config/config_real_physionet_full_gedai_only.yml` (`use_baseline: false`, `use_icalabel: false`, `use_gedai: true`).
+- **Config:** `config/config_alljoined_workstation.yml` (`use_baseline: false`, `use_icalabel: false`, `use_gedai: true`).
 - **Output:** `results/physionet_full_gedai_only/` (tables with **gedai** only).
 
 ---
@@ -78,9 +78,9 @@ python scripts/merge_pipeline_runs.py \
 
 | Run        | Pipelines           | Config                              | Results dir                      |
 |-----------|---------------------|-------------------------------------|----------------------------------|
-| Pass 1    | baseline, icalabel  | config_real_physionet_full.yml      | results/physionet_full           |
-| Pass 2    | gedai               | config_real_physionet_full_gedai_only.yml | results/physionet_full_gedai_only |
-| Merge     | —                   | merge_pipeline_runs.py              | results/physionet_full_merged    |
+| Pass 1    | baseline + ICALabel (heavy) | `config_alljoined_smoke_1sub_full.yml` or a copy with `use_gedai: false` | whatever `results_root` you set |
+| Pass 2    | baseline + GEDAI      | `config_alljoined_workstation.yml` (ICALabel off) | `./results/alljoined_workstation` (default in YAML) |
+| Merge     | —                   | `scripts/merge_pipeline_runs.py`    | your chosen merged output dir   |
 
 **Why this is better for RAM:** Pass 1 never loads GEDAI; Pass 2 only runs GEDAI (and no ICA). Peak memory per run stays lower than running all three pipelines in one process.
 
@@ -105,7 +105,7 @@ bash scripts/run_first_pass_full.sh
 ```
 
 - Overlay/PSD for **subject 1 only** (set `N_SIG=5` before running to get first 5 subjects).
-- After the run, `scripts/brain_signal_removal_report.py` runs and writes **`results/physionet_full/brain_signal_removal_report.md`** with:
+- After the run, `scripts/brain_signal_removal_report.py` runs and writes **`results/alljoined_workstation/brain_signal_removal_report.md`** (or under the `results_root` in your config) with:
   - % subjects with alpha (8–12 Hz) over-removal
   - % subjects with beta (13–30 Hz) over-removal
   - mean/min ratios per pipeline
@@ -125,17 +125,17 @@ source .venv/bin/activate
 export MPLBACKEND=Agg
 
 # 1) First pass: baseline + ICALabel, overlay/PSD for subject 1
-python -m src.run_full_test config/config_real_physionet_full.yml
+python -m src.run_full_test config/config_alljoined_workstation.yml
 
 # Or overlay/PSD for first 5 subjects:
-# python -m src.run_full_test config/config_real_physionet_full.yml --n-signal-integrity-subjects 5
+# python -m src.run_full_test config/config_alljoined_workstation.yml --n-signal-integrity-subjects 5
 
 # 2) Brain signal removal report (first 10 subjects; use 109 for full)
 python scripts/brain_signal_removal_report.py \
-  --config config/config_real_physionet_full.yml \
+  --config config/config_alljoined_workstation.yml \
   --n-subjects 10 \
   --channel C3 \
-  --out results/physionet_full/brain_signal_removal_report.md \
+  --out results/alljoined_workstation/brain_signal_removal_report.md \
   --verbose
 ```
 

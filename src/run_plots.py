@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="config/config.yml",
+        default="config/config_alljoined_smoke_1sub.yml",
         help="Path to YAML configuration file.",
     )
     args = parser.parse_args()

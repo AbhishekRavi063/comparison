@@ -8,12 +8,21 @@ from scipy.linalg import eigh
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.model_selection import StratifiedKFold
 
-from ..denoising.pipelines import bandpass_filter, apply_icalabel, apply_gedai
+from ..denoising.pipelines import (
+    apply_asr,
+    apply_gedai,
+    apply_icalabel,
+    apply_pylossless,
+    bandpass_filter,
+)
 
 
 @dataclass
 class CSPResult:
     fold_accuracies: List[float]
+    # Pooled test predictions across CV folds (for binomial vs-chance with large N).
+    pooled_test_correct: int = 0
+    pooled_test_total: int = 0
 
 
 def _compute_csp_filters(
@@ -78,7 +87,7 @@ def run_csp_pipeline(
     denoising: str,
 ) -> CSPResult:
     """Run CSP → LDA backbone (float32 throughout for memory)."""
-    if denoising not in {"baseline", "icalabel", "gedai"}:
+    if denoising not in {"baseline", "icalabel", "gedai", "asr", "pylossless"}:
         raise ValueError(f"Unknown denoising strategy: {denoising}")
 
     X = np.asarray(X, dtype=np.float32)
@@ -103,9 +112,18 @@ def run_csp_pipeline(
             X_all_clean = apply_icalabel(X_all, sfreq, ch_names, l_freq, h_freq)
             X_train_proc = X_all_clean[: len(X_train_bp)]
             X_test_proc = X_all_clean[len(X_train_bp) :]
-        else:  # gedai
+        else:
             X_all = np.concatenate([X_train_bp, X_test_bp], axis=0)
-            X_all_clean = apply_gedai(X_all, sfreq, ch_names)
+            if denoising == "gedai":
+                X_all_clean = apply_gedai(
+                    X_all, sfreq, ch_names, l_freq, h_freq
+                )
+            elif denoising == "asr":
+                X_all_clean = apply_asr(X_all, sfreq, ch_names, l_freq, h_freq)
+            else:  # pylossless
+                X_all_clean = apply_pylossless(
+                    X_all, sfreq, ch_names, l_freq, h_freq
+                )
             X_train_proc = X_all_clean[: len(X_train_bp)]
             X_test_proc = X_all_clean[len(X_train_bp) :]
 
@@ -131,6 +149,8 @@ def run_csp_cv_preprocessed(
     y = np.asarray(y)
     fold_accuracies: List[float] = []
 
+    pooled_correct = 0
+    pooled_total = 0
     for train_idx, test_idx in cv_splits:
         X_train = X_proc[train_idx]
         X_test = X_proc[test_idx]
@@ -143,10 +163,16 @@ def run_csp_cv_preprocessed(
 
         clf = LinearDiscriminantAnalysis()
         clf.fit(X_train_feat, y_train)
-        acc = clf.score(X_test_feat, y_test)
-        fold_accuracies.append(float(acc))
+        pred = clf.predict(X_test_feat)
+        pooled_correct += int(np.sum(pred == y_test))
+        pooled_total += int(len(y_test))
+        fold_accuracies.append(float(np.mean(pred == y_test)))
 
-    return CSPResult(fold_accuracies=fold_accuracies)
+    return CSPResult(
+        fold_accuracies=fold_accuracies,
+        pooled_test_correct=pooled_correct,
+        pooled_test_total=pooled_total,
+    )
 
 
 def fit_csp_model(
@@ -169,8 +195,12 @@ def fit_csp_model(
         X_proc = X_bp
     elif denoising == "icalabel":
         X_proc = apply_icalabel(X_bp, sfreq, ch_names, l_freq, h_freq)
+    elif denoising == "gedai":
+        X_proc = apply_gedai(X_bp, sfreq, ch_names, l_freq, h_freq)
+    elif denoising == "asr":
+        X_proc = apply_asr(X_bp, sfreq, ch_names, l_freq, h_freq)
     else:
-        X_proc = apply_gedai(X_bp, sfreq, ch_names)
+        X_proc = apply_pylossless(X_bp, sfreq, ch_names, l_freq, h_freq)
     W = _compute_csp_filters(X_proc, y, n_components=n_components)
     X_feat = _project_csp(X_proc, W)
     clf = LinearDiscriminantAnalysis()

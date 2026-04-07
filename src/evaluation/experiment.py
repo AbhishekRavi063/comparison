@@ -42,9 +42,12 @@ from ..data.dataset_noise_inspection import (
 )
 from .metrics import (
     SubjectPerformance,
+    binomial_vs_chance_p_value,
     empirical_chance_p_value,
     cohen_d_pooled,
+    mann_whitney_pipeline_p_value,
     paired_permutation_p_value,
+    wilcoxon_paired_pipeline_p_value,
     compute_band_power,
 )
 
@@ -85,6 +88,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
     stats_dir.mkdir(parents=True, exist_ok=True)
     if cfg.memory.save_models:
         models_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.memory.save_denoised_npz:
+        (results_root / cfg.memory.denoised_subdir).mkdir(parents=True, exist_ok=True)
 
     subject_performances: List[SubjectPerformance] = []
 
@@ -98,6 +103,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         pipelines.append("icalabel")
     if cfg.denoising.use_gedai:
         pipelines.append("gedai")
+    if getattr(cfg.denoising, "use_pylossless", False):
+        pipelines.append("pylossless")
 
     backbones = []
     if cfg.backbones.use_csp:
@@ -109,6 +116,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
     n_subj = len(cfg.subjects)
     log.info(
         f"Experiment: {n_subj} subjects, pipelines={pipelines}, backbones={backbones}, "
+        f"subject_chance={cfg.statistics.subject_chance_method}, "
+        f"pipeline_cmp={cfg.statistics.pipeline_comparison_method}, "
         f"null_perm={cfg.permutation.n_subject_level}, pipeline_perm={cfg.permutation.n_pipeline_level}"
     )
 
@@ -128,10 +137,14 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
 
         # Pipeline order: baseline and ICALabel first, then GEDAI.
         for pipeline in pipelines:
-            if pipeline == "gedai" and ("baseline" in pipelines or "icalabel" in pipelines):
+            if pipeline in ("gedai", "pylossless") and (
+                "baseline" in pipelines or "icalabel" in pipelines
+            ):
                 gc.collect()
                 _log_memory_if_debug(log)
-                log.info("  (baseline/ICALabel done for this subject; running GEDAI next)")
+                log.info(
+                    f"  (lighter pipelines done for this subject; running {pipeline} next)"
+                )
 
             X_proc = preprocess_subject_data(
                 X=X,
@@ -140,13 +153,26 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 l_freq=cfg.bandpass.l_freq,
                 h_freq=cfg.bandpass.h_freq,
                 denoising=pipeline,
-                # For GEDAI: pass subject_id so it loads the full continuous
-                # EDF session rather than working on concatenated short trials.
-                subject_id=sid if pipeline == "gedai" else None,
-                dataset_name=cfg.dataset_label,
+                # GEDAI (PhysioNet): continuous EDF; PyLossless (Alljoined): optional manifest.
+                subject_id=sid if pipeline in ("gedai", "pylossless") else None,
+                dataset_name=cfg.dataset_label or "",
                 gedai_n_jobs=cfg.memory.n_jobs,
+                data_root=cfg.data_root,
             )
-            
+
+            if cfg.memory.save_denoised_npz:
+                ddir = results_root / cfg.memory.denoised_subdir
+                ch_arr = np.asarray(list(subj_data.ch_names), dtype=object)
+                den_path = ddir / f"subject_{sid}_{pipeline}.npz"
+                np.savez_compressed(
+                    den_path,
+                    X=np.asarray(X_proc, dtype=np.float32),
+                    y=y,
+                    sfreq=np.float32(subj_data.sfreq),
+                    ch_names=ch_arr,
+                )
+                log.info(f"  Saved denoised data {den_path}")
+
             # --- Signal Preservation Calculation ---
             # We use the config's channels_of_interest (first one as primary)
             # Baseline power is calculated from X_bp (the first pipeline which is usually 'baseline')
@@ -213,6 +239,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     )
 
             tangent_fold_features = None
+            use_chance_binom = cfg.statistics.subject_chance_method == "binomial"
+            n_classes = int(len(np.unique(y)))
 
             for backbone in backbones:
                 if backbone == "csp":
@@ -232,50 +260,21 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 fold_acc = list(res.fold_accuracies)
                 mean_acc = float(np.mean(fold_acc))
                 std_acc = float(np.std(fold_acc, ddof=1))
-                del res
+                pooled_c = int(res.pooled_test_correct)
+                pooled_t = int(res.pooled_test_total)
 
-                # Empirical chance level per subject (label permutations on fixed CV splits)
-                null_acc: List[float] = []
-                base_n = int(cfg.permutation.n_subject_level)
-                for _ in tqdm(
-                    range(base_n),
-                    desc=f"  null s{sid} {backbone} {pipeline}",
-                    leave=False,
-                    total=base_n,
-                ):
-                    y_shuffled = np.random.permutation(y)
-                    if backbone == "csp":
-                        nres = run_csp_cv_preprocessed(
-                            X_proc=X_proc,
-                            y=y_shuffled,
-                            cv_splits=cv_splits,
-                        )
-                    else:
-                        nres = run_tangent_cv_precomputed_features(
-                            y=y_shuffled,
-                            cv_splits=cv_splits,
-                            fold_features=tangent_fold_features,
-                        )
-                    null_acc.append(float(np.mean(nres.fold_accuracies)))
-                    del nres
-
-                p_emp = empirical_chance_p_value(mean_acc, null_acc)
-
-                if (
-                    cfg.permutation.adaptive_step_up
-                    and _is_borderline_p_value(p_emp, cfg)
-                    and int(cfg.permutation.step_up_n_subject_level) > base_n
-                ):
-                    extra_n = int(cfg.permutation.step_up_n_subject_level) - base_n
-                    log.info(
-                        f"  Step-up permutations for s{sid} {backbone} {pipeline}: "
-                        f"{base_n} -> {cfg.permutation.step_up_n_subject_level} (borderline p={p_emp:.4f})"
-                    )
+                if use_chance_binom:
+                    p_emp = binomial_vs_chance_p_value(pooled_c, pooled_t, n_classes)
+                    p_method = "binomial"
+                else:
+                    p_method = "permutation"
+                    null_acc: List[float] = []
+                    base_n = int(cfg.permutation.n_subject_level)
                     for _ in tqdm(
-                        range(extra_n),
-                        desc=f"  step-up s{sid} {backbone} {pipeline}",
+                        range(base_n),
+                        desc=f"  null s{sid} {backbone} {pipeline}",
                         leave=False,
-                        total=extra_n,
+                        total=base_n,
                     ):
                         y_shuffled = np.random.permutation(y)
                         if backbone == "csp":
@@ -292,7 +291,44 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                             )
                         null_acc.append(float(np.mean(nres.fold_accuracies)))
                         del nres
+
                     p_emp = empirical_chance_p_value(mean_acc, null_acc)
+
+                    if (
+                        cfg.permutation.adaptive_step_up
+                        and _is_borderline_p_value(p_emp, cfg)
+                        and int(cfg.permutation.step_up_n_subject_level) > base_n
+                    ):
+                        extra_n = int(cfg.permutation.step_up_n_subject_level) - base_n
+                        log.info(
+                            f"  Step-up permutations for s{sid} {backbone} {pipeline}: "
+                            f"{base_n} -> {cfg.permutation.step_up_n_subject_level} (borderline p={p_emp:.4f})"
+                        )
+                        for _ in tqdm(
+                            range(extra_n),
+                            desc=f"  step-up s{sid} {backbone} {pipeline}",
+                            leave=False,
+                            total=extra_n,
+                        ):
+                            y_shuffled = np.random.permutation(y)
+                            if backbone == "csp":
+                                nres = run_csp_cv_preprocessed(
+                                    X_proc=X_proc,
+                                    y=y_shuffled,
+                                    cv_splits=cv_splits,
+                                )
+                            else:
+                                nres = run_tangent_cv_precomputed_features(
+                                    y=y_shuffled,
+                                    cv_splits=cv_splits,
+                                    fold_features=tangent_fold_features,
+                                )
+                            null_acc.append(float(np.mean(nres.fold_accuracies)))
+                            del nres
+                        p_emp = empirical_chance_p_value(mean_acc, null_acc)
+                    del null_acc
+
+                del res
 
                 subject_performances.append(
                     SubjectPerformance(
@@ -305,11 +341,13 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         p_empirical=p_emp,
                         alpha_ratio=alpha_ratio,
                         beta_ratio=beta_ratio,
+                        pooled_test_correct=pooled_c if use_chance_binom else None,
+                        pooled_test_total=pooled_t if use_chance_binom else None,
+                        p_vs_chance_method=p_method,
                     )
                 )
-                del null_acc
                 log.info(
-                    f"  Subject {sid} | {backbone} | {pipeline} | acc={mean_acc:.3f} | p_emp={p_emp:.4f}"
+                    f"  Subject {sid} | {backbone} | {pipeline} | acc={mean_acc:.3f} | p={p_emp:.4f} ({p_method})"
                 )
 
                 # Save trained model after each run (full-data fit) for reuse / deployment
@@ -371,18 +409,31 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     "mean_accuracy": sp.mean_accuracy,
                     "std_accuracy": sp.std_accuracy,
                     "p_empirical": sp.p_empirical,
+                    "p_vs_chance_method": sp.p_vs_chance_method,
+                    "pooled_test_correct": sp.pooled_test_correct,
+                    "pooled_test_total": sp.pooled_test_total,
                     "alpha_ratio": sp.alpha_ratio,
                     "beta_ratio": sp.beta_ratio,
                 }
             )
     df_subject = pd.DataFrame(rows)
     df_subject.to_csv(tables_dir / "subject_level_performance.csv", index=False)
-    log.info("Subject-level table written. Computing between-pipeline permutation tests...")
+    log.info(
+        "Subject-level table written. Computing between-pipeline tests "
+        f"({cfg.statistics.pipeline_comparison_method})..."
+    )
 
     # Between-pipeline comparisons (within backbone): GEDAI vs Bandpass, ICALabel vs Bandpass, GEDAI vs ICALabel
     comparison_rows: List[Dict] = []
     for backbone in backbones:
-        for (p1, p2) in [("gedai", "baseline"), ("icalabel", "baseline"), ("gedai", "icalabel")]:
+        for (p1, p2) in [
+            ("gedai", "baseline"),
+            ("icalabel", "baseline"),
+            ("gedai", "icalabel"),
+            ("pylossless", "baseline"),
+            ("gedai", "pylossless"),
+            ("icalabel", "pylossless"),
+        ]:
             if p1 not in pipelines or p2 not in pipelines:
                 continue
 
@@ -400,9 +451,15 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             if not scores1 or not scores2:
                 continue
 
-            p_val = paired_permutation_p_value(
-                scores1, scores2, n_resamples=cfg.permutation.n_pipeline_level
-            )
+            pcm = cfg.statistics.pipeline_comparison_method
+            if pcm == "mann_whitney":
+                p_val = mann_whitney_pipeline_p_value(scores1, scores2)
+            elif pcm == "wilcoxon":
+                p_val = wilcoxon_paired_pipeline_p_value(scores1, scores2)
+            else:
+                p_val = paired_permutation_p_value(
+                    scores1, scores2, n_resamples=cfg.permutation.n_pipeline_level
+                )
             d_eff = cohen_d_pooled(scores1, scores2)
 
             comparison_rows.append(
@@ -412,10 +469,18 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     p_value=p_val,
                     cohen_d=d_eff,
                     mean_diff=float(np.mean(scores1) - np.mean(scores2)),
+                    comparison_method=pcm,
                 )
             )
 
-    col_names = ["backbone", "comparison", "p_value", "cohen_d", "mean_diff"]
+    col_names = [
+        "backbone",
+        "comparison",
+        "p_value",
+        "cohen_d",
+        "mean_diff",
+        "comparison_method",
+    ]
     df_comp = pd.DataFrame(comparison_rows)
     if df_comp.empty:
         df_comp = pd.DataFrame(columns=col_names)

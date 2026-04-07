@@ -36,7 +36,7 @@ All implementations are designed for **local execution under 16 GB RAM**, with
 | **`docs/ALLJOINED_COMMANDS.md`** | Copy-paste: download 1 / smoke full / download 20 / full benchmark |
 | **`config/config_alljoined_smoke_1sub_full.yml`** | One subject, full denoising stack (baseline + ICALabel + GEDAI) for integration tests |
 | **`docs/FULL_RUN_RAM_EFFICIENT.md`** | Two-pass runs (baseline+ICA vs GEDAI) + merging results on 16 GB RAM |
-| **`config/`** | Example YAMLs: `config.yml`, PhysioNet/BNCI/Alljoined smoke and full configs |
+| **`config/config_alljoined_*.yml`** | All experiment YAMLs are Alljoined-oriented (smoke, workstation, Windows, PyLossless, tests) |
 
 There is **no single root `requirements.txt`**; install Python deps with **`python -m pip install …`** (see **Running the Pipeline** and **`WINDOWS_SETUP.md`**). The **GEDAI** library is the nested package **`gedai_official/`** — install it in editable mode: `pip install -e ./gedai_official` (see **GEDAI dependency** below).
 
@@ -57,7 +57,7 @@ There is **no single root `requirements.txt`**; install Python deps with **`pyth
 
 ## Project Structure
 
-- `config/` – YAML experiment configs (point `--config` here; start from `config/config.yml` or a dataset-specific example)
+- `config/` – YAML experiment configs (Alljoined only; default CLI: `config/config_alljoined_smoke_1sub.yml`)
 - `gedai_official/` – **GEDAI** Python package (install with `pip install -e ./gedai_official`; includes bundled leadfield `gedai/data/fsavLEADFIELD_4_GEDAI.mat`)
 - `scripts/` – helpers (e.g. Alljoined smoke: `scripts/smoke_alljoined_1sub.sh` / `.ps1`)
 - `src/`
@@ -103,7 +103,7 @@ to the common `.npz` format expected by `NpzMotorImageryDataset`:
     # From project root
     python -m src.data.prepare_physionet_eegbci --subjects 1 2 3 --out-root data/physionet_eegbci
     ```
-  - Then set in `config/config.yml`:
+  - Then set in your YAML (e.g. `config/config_alljoined_smoke_1sub.yml`):
     ```yaml
     data_root: ./data/physionet_eegbci
     subjects: [1, 2, 3]
@@ -117,28 +117,11 @@ to the common `.npz` format expected by `NpzMotorImageryDataset`:
     ```bash
     python -m src.data.prepare_bnci2014_001 --subjects 1 2 3 --out-root data/bnci2014_001
     ```
-  - Then set in `config/config.yml`:
+  - Then set in your YAML (e.g. `config/config_alljoined_smoke_1sub.yml`):
     ```yaml
     data_root: ./data/bnci2014_001
     subjects: [1, 2, 3]
     ```
-
-- **Cho2017 (motor imagery, MOABB / GigaDB)**  
-  - Prepared via `src/data/prepare_cho2017.py` (downloads through **MOABB**; first run can take several minutes).  
-  - Install: `python -m pip install moabb`.  
-  - **One-subject smoke** (good for checking a Windows / fresh env without Hugging Face):
-    ```bash
-    bash scripts/smoke_cho2017_1sub.sh
-    ```
-    PowerShell: `.\scripts\smoke_cho2017_1sub.ps1`  
-    Or manually:
-    ```bash
-    python -m src.data.prepare_cho2017 --subjects 1 --out-root data/cho2017/processed
-    export MPLBACKEND=Agg
-    python -m src.run_all --config config/config_cho2017_smoke_1sub.yml
-    ```
-    Results: `results/cho2017_smoke_1sub/`.  
-  - Minimal config with 2 subjects: `config/config_cho2017_smoke.yml`.
 
 - **Alljoined-1.6M (consumer EEG, Hugging Face)**  
   - Prepared via `src/data/prepare_alljoined.py` (downloads EDF + metadata per subject).  
@@ -157,10 +140,9 @@ to the common `.npz` format expected by `NpzMotorImageryDataset`:
     Optional: `MAX_EDFS=5 bash scripts/smoke_alljoined_1sub.sh` to include more EDFs per subject (larger download).  
     Results: `results/alljoined_smoke_1sub/`.
 
-You can run the exact same CSP and tangent-space backbones, denoising variants,
-and statistical pipeline on these datasets by changing `data_root` and
-`subjects` in `config.yml`. This directly implements your requirement to use
-**PhysioNet** plus at least one additional MI dataset in the same framework.
+You can run the same CSP and tangent-space backbones and denoising variants on
+other `.npz` datasets by copying an Alljoined YAML and setting `data_root` and
+`subjects` to match your prepared data.
 
 ---
 
@@ -177,7 +159,7 @@ Per subject, data are stored as:
 Loading is handled by `NpzMotorImageryDataset` (`src/io/dataset.py`):
 
 - `X` is **cast to `float32`** (or another dtype if configured) via
-  `float_dtype` in `config.yml` (default: `float32`).
+  `float_dtype` in your config YAML (default: `float32`).
 - All subsequent processing (bandpass, CSP, covariance, tangent space) operates
   on this `float32` representation, with careful casting inside algorithms
   where needed (e.g. tangent space projection returns `float32`).
@@ -189,7 +171,7 @@ This satisfies the **professor’s requirement** that the pipeline runs in
 
 ## Configuration and Memory Constraints
 
-The main configuration file is `config/config.yml`. Key fields:
+Reference template: `config/config_alljoined_smoke_1sub.yml`. Key fields:
 
 - **Data and subjects**
   - `data_root: ./data`
@@ -210,6 +192,10 @@ The main configuration file is `config/config.yml`. Key fields:
   - `memory.float_dtype: float32` — **enforced everywhere**: load, bandpass, ICALabel, GEDAI, CSP features, tangent-space features, covariance matrices.
   - `memory.n_jobs: 1` — no multiprocessing; all backbones and scikit-learn estimators use a single process.
   - `memory.save_models: true` — after each (subject, backbone, pipeline) run, a full-data model is saved to `results/models/subject_<id>_<backbone>_<pipeline>.joblib` (CSP: filters + LDA; tangent: reference covariance + LogisticRegression). Disable with `save_models: false` if you only need tables/plots.
+  - `memory.save_denoised_npz: false` — if `true`, writes `results/<denoised_subdir>/subject_<id>_<pipeline>.npz` (`X`, `y`, `sfreq`, `ch_names`) for reuse elsewhere (large disk use).
+- **Statistics (optional YAML `statistics:`)**
+  - `subject_chance_method: permutation` (default) or `binomial` — exact binomial test on pooled CV test predictions vs chance `1/K` (recommended when trial counts are huge).
+  - `pipeline_comparison_method: permutation` (default), `mann_whitney`, or `wilcoxon` — between-pipeline tests on subject-level mean accuracies (`wilcoxon` is the paired analogue to Mann–Whitney).
 - **Backbones**
   - `backbones.use_csp: true/false`
   - `backbones.use_tangent_space: true/false`
@@ -245,7 +231,7 @@ Memory-related design choices (optimized for MacBook / 16 GB RAM):
 - Features: log-variance of CSP-projected trials.
 - Classifier: `LinearDiscriminantAnalysis` (scikit-learn).
 
-Supported denoising variants (select via `denoising` parameter and `config.yml`):
+Supported denoising variants (select via `denoising` in your YAML):
 
 - `baseline` – bandpass only
 - `icalabel` – bandpass → ICALabel artifact rejection
@@ -351,7 +337,7 @@ assessment and supplements it with **effect size reporting**.
 After running `src.run_all`, generate performance plots via:
 
 ```bash
-python -m src.run_plots --config config/config.yml
+python -m src.run_plots --config config/config_alljoined_smoke_1sub.yml
 ```
 
 This creates figures in `results/figures/`:
@@ -375,13 +361,13 @@ As recommended by the professor, pre–post denoising is visualized by **overlay
 Use:
 
 ```bash
-python -m src.run_signal_integrity --config config/config.yml --subject 1 --trial 0
+python -m src.run_signal_integrity --config config/config_alljoined_smoke_1sub.yml --subject 1 --trial 0
 ```
 
 Optional: open GEDAI’s **interactive** overlay (keyboard scroll, scale, overlay/diff modes):
 
 ```bash
-python -m src.run_signal_integrity --config config/config.yml --subject 1 --trial 0 --interactive
+python -m src.run_signal_integrity --config config/config_alljoined_smoke_1sub.yml --subject 1 --trial 0 --interactive
 ```
 
 The script:
@@ -424,19 +410,19 @@ This supports **physiological plausibility**: check that alpha/mu/beta are prese
 
    - Place per-subject files as `data/subject_<ID>.npz` with keys
      `X, y, sfreq, ch_names`.
-   - Update `config/config.yml` with the list of `subjects`.
+   - Update `config/config_alljoined_smoke_1sub.yml` with the list of `subjects`.
 
 3. **Run the full experiment**
 
    ```bash
-   python -m src.run_all --config config/config.yml
+   python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
    ```
 
 4. **Generate figures**
 
    ```bash
-   python -m src.run_plots --config config/config.yml
-   python -m src.run_signal_integrity --config config/config.yml --subject 1 --trial 0
+   python -m src.run_plots --config config/config_alljoined_smoke_1sub.yml
+   python -m src.run_signal_integrity --config config/config_alljoined_smoke_1sub.yml --subject 1 --trial 0
    ```
 
 5. **Run tests** (synthetic data; no real EEG required)

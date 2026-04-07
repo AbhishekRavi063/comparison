@@ -18,8 +18,12 @@ cv:
   shuffle: true
   random_state: 42
 
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
 permutation:
-  n_subject_level: 100
+  n_subject_level: 0
   n_pipeline_level: 1000
 
 memory:

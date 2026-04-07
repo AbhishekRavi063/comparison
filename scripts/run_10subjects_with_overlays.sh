@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 source .venv/bin/activate
 export MPLBACKEND=Agg
 
-CONFIG="config/config_real_physionet_5subjects_quick.yml"
+CONFIG="config/config_alljoined_full_win.yml"
 N=10
 
 echo "=============================================="

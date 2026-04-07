@@ -57,7 +57,7 @@ Tune `--workers` (1–4) if Hugging Face or RAM complains.
 ```powershell
 $env:MPLBACKEND = "Agg"
 .\scripts\run_alljoined_shards.ps1 -Config config/config_alljoined_workstation.yml -NumShards 4
-python -m src.merge_sharded_results --shards results/alljoined_w1 results/alljoined_w2 results/alljoined_w3 results/alljoined_w4 --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai
+python -m src.merge_sharded_results --shards results/alljoined_w1 results/alljoined_w2 results/alljoined_w3 results/alljoined_w4 --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai --pipeline-comparison-method mann_whitney
 ```
 
 **bash**
@@ -65,7 +65,7 @@ python -m src.merge_sharded_results --shards results/alljoined_w1 results/alljoi
 ```bash
 export MPLBACKEND=Agg
 NUM_SHARDS=4 ./scripts/run_alljoined_shards.sh
-python -m src.merge_sharded_results --shards results/alljoined_w1 results/alljoined_w2 results/alljoined_w3 results/alljoined_w4 --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai
+python -m src.merge_sharded_results --shards results/alljoined_w1 results/alljoined_w2 results/alljoined_w3 results/alljoined_w4 --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai --pipeline-comparison-method mann_whitney
 ```
 
 **Option B — single process (simpler, slower)**

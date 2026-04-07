@@ -17,7 +17,7 @@ export PYGEDAI_FORCE_CPU=1
 export PYTHONPATH=.
 
 python run_evaluation.py \
-  --config config/config_cross_subject_full.yml \
+  --config config/config_alljoined_workstation.yml \
   --stream-subjects \
   --pipelines A,B,C,D
 ```
@@ -60,7 +60,7 @@ source .venv/bin/activate
 export HOME="$PWD/.mne_home"
 export MPLBACKEND=Agg
 
-python -m src.run_full_test config/config_real_physionet_5subjects_quick.yml --out-report results/physionet_5subjects_quick_report.md
+python -m src.run_full_test config/config_alljoined_professor_smoke.yml --out-report results/alljoined_quick_report.md
 ```
 
 ---
@@ -75,7 +75,7 @@ source .venv/bin/activate
 export HOME="$PWD/.mne_home"
 export MPLBACKEND=Agg
 
-python -m src.run_full_test config/config_real_physionet_5subjects.yml --out-report results/physionet_5subjects_cross_dataset_report.md
+python -m src.run_full_test config/config_alljoined_preprint_full.yml --out-report results/alljoined_preprint_report.md
 ```
 
 ---
@@ -96,7 +96,7 @@ python -m src.data.prepare_physionet_eegbci --subjects $(seq 1 109) --out-root d
 
 **Step 2 — Run full evaluation (overnight):**
 ```bash
-cd /Users/abhishekr/Documents/EEG/comparison && source .venv/bin/activate && export HOME="$PWD/.mne_home" && export MPLBACKEND=Agg && python -m src.run_full_test config/config_real_physionet_full.yml --out-report results/physionet_full_cross_dataset_report.md
+cd /Users/abhishekr/Documents/EEG/comparison && source .venv/bin/activate && export HOME="$PWD/.mne_home" && export MPLBACKEND=Agg && python -m src.run_full_test config/config_alljoined_workstation.yml --out-report results/alljoined_workstation_report.md
 ```
 
 **What gets saved (under `results/physionet_full/`):**
@@ -154,7 +154,7 @@ python -m src.data.prepare_physionet_eegbci --subjects $(seq 1 20) --out-root da
 
 # Run with RAM logging (optional: pip install psutil)
 export EEG_MEMORY_DEBUG=1
-python -m src.run_full_test config/config_real_physionet_20subjects.yml
+python -m src.run_full_test config/config_alljoined_full_win.yml
 ```
 
 ## 7. Validation summary (after run)
@@ -175,7 +175,7 @@ python scripts/validate_5subjects.py --results-dir results/physionet_5subjects
 ## 8. Optional: save live log to file and still see output
 
 ```bash
-python -m src.run_full_test config/config_real_physionet_5subjects_quick.yml 2>&1 | tee results/run.log
+python -m src.run_full_test config/config_alljoined_smoke_1sub.yml 2>&1 | tee results/run.log
 ```
 
 You will see the same output on the terminal and in `results/run.log`.

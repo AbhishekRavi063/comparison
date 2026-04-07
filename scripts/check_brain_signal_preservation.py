@@ -31,7 +31,7 @@ def band_power(sig: np.ndarray, sfreq: float, lo: float, hi: float) -> float:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Check alpha/beta preservation across pipelines.")
-    parser.add_argument("--config", default="config/config_real_physionet_5subjects_quick.yml")
+    parser.add_argument("--config", default="config/config_alljoined_smoke_1sub.yml")
     parser.add_argument("--subject", type=int, default=1)
     parser.add_argument("--channel", default="C3", help="Channel for PSD (e.g. C3, C4)")
     args = parser.parse_args()

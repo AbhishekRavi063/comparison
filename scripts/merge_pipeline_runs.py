@@ -43,7 +43,14 @@ def _compute_pipeline_comparisons(
     rows = []
     for backbone in agg["backbone"].unique():
         b = agg[agg["backbone"] == backbone]
-        for p1, p2 in [("gedai", "baseline"), ("icalabel", "baseline"), ("gedai", "icalabel")]:
+        for p1, p2 in [
+            ("gedai", "baseline"),
+            ("icalabel", "baseline"),
+            ("gedai", "icalabel"),
+            ("pylossless", "baseline"),
+            ("gedai", "pylossless"),
+            ("icalabel", "pylossless"),
+        ]:
             if p1 not in pipelines or p2 not in pipelines:
                 continue
             s1 = b[b["pipeline"] == p1].set_index("subject")["accuracy"]

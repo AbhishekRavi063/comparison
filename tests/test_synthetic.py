@@ -49,7 +49,7 @@ def test_synthetic_baseline_only(tmp_path: Path) -> None:
 
     _make_synthetic_subject(data_root / "subject_1.npz")
 
-    cfg = ExperimentConfig.from_yaml("config/config.yml")
+    cfg = ExperimentConfig.from_yaml("config/config_alljoined_smoke_1sub.yml")
     cfg.data_root = data_root
     cfg.results_root = results_root
     cfg.subjects = [1]

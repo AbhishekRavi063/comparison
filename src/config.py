@@ -35,6 +35,17 @@ class MemoryConfig:
     float_dtype: str
     n_jobs: int
     save_models: bool = True
+    # Save full denoised trial arrays per (subject, pipeline) for offline/cloud reuse (large disk).
+    save_denoised_npz: bool = False
+    denoised_subdir: str = "denoised"
+
+
+@dataclass
+class StatisticsConfig:
+    """Subject vs-chance and between-pipeline inference (professor: binomial + Mann–Whitney for large N)."""
+
+    subject_chance_method: str = "binomial"  # permutation | binomial
+    pipeline_comparison_method: str = "mann_whitney"  # permutation | mann_whitney | wilcoxon
 
 
 @dataclass
@@ -48,8 +59,9 @@ class DenoisingConfig:
     use_baseline: bool
     use_icalabel: bool
     use_gedai: bool
-    # Optional additional pipelines (e.g. ASR); default False for older configs.
+    # Optional additional pipelines (e.g. ASR, PyLossless); default False for older configs.
     use_asr: bool = False
+    use_pylossless: bool = False
 
 
 @dataclass
@@ -71,6 +83,7 @@ class ExperimentConfig:
     backbones: BackboneConfig
     denoising: DenoisingConfig
     signal_integrity: SignalIntegrityConfig
+    statistics: StatisticsConfig
     dataset_label: str | None = None  # e.g. "physionet_eegbci"; for cross-dataset report
 
     @classmethod
@@ -85,6 +98,18 @@ class ExperimentConfig:
             use_icalabel=denoising_cfg.get("use_icalabel", False),
             use_gedai=denoising_cfg.get("use_gedai", False),
             use_asr=denoising_cfg.get("use_asr", False),
+            use_pylossless=denoising_cfg.get("use_pylossless", False),
+        )
+
+        mem = cfg["memory"]
+        stat_cfg = cfg.get("statistics") or {}
+        statistics = StatisticsConfig(
+            subject_chance_method=str(
+                stat_cfg.get("subject_chance_method", "binomial")
+            ).lower(),
+            pipeline_comparison_method=str(
+                stat_cfg.get("pipeline_comparison_method", "mann_whitney")
+            ).lower(),
         )
 
         return cls(
@@ -96,12 +121,15 @@ class ExperimentConfig:
             cv=CVConfig(**cfg["cv"]),
             permutation=PermutationConfig(**cfg["permutation"]),
             memory=MemoryConfig(
-                float_dtype=cfg["memory"]["float_dtype"],
-                n_jobs=cfg["memory"]["n_jobs"],
-                save_models=cfg["memory"].get("save_models", True),
+                float_dtype=mem["float_dtype"],
+                n_jobs=mem["n_jobs"],
+                save_models=mem.get("save_models", True),
+                save_denoised_npz=mem.get("save_denoised_npz", False),
+                denoised_subdir=str(mem.get("denoised_subdir", "denoised")),
             ),
             backbones=BackboneConfig(**cfg["backbones"]),
             denoising=denoising,
             signal_integrity=SignalIntegrityConfig(**cfg["signal_integrity"]),
+            statistics=statistics,
             dataset_label=cfg.get("dataset_label"),
         )

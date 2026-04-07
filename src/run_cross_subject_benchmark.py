@@ -447,7 +447,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="config/config_real_physionet_full_fast.yml",
+        default="config/config_alljoined_workstation.yml",
     )
     parser.add_argument(
         "--stream-subjects",

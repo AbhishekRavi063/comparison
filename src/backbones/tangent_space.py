@@ -8,12 +8,20 @@ from scipy.linalg import logm
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 
-from ..denoising.pipelines import bandpass_filter, apply_icalabel, apply_gedai
+from ..denoising.pipelines import (
+    apply_asr,
+    apply_gedai,
+    apply_icalabel,
+    apply_pylossless,
+    bandpass_filter,
+)
 
 
 @dataclass
 class TangentSpaceResult:
     fold_accuracies: List[float]
+    pooled_test_correct: int = 0
+    pooled_test_total: int = 0
 
 
 def _covariance_matrices(X: np.ndarray) -> np.ndarray:
@@ -87,10 +95,10 @@ def run_tangent_space_pipeline(
 
     Parameters
     ----------
-    denoising : {\"baseline\", \"icalabel\", \"gedai\"}
+    denoising : {\"baseline\", \"icalabel\", \"gedai\", \"asr\", \"pylossless\"}
         Denoising strategy to apply before covariance computation.
     """
-    if denoising not in {"baseline", "icalabel", "gedai"}:
+    if denoising not in {"baseline", "icalabel", "gedai", "asr", "pylossless"}:
         raise ValueError(f"Unknown denoising strategy: {denoising}")
 
     X = np.asarray(X, dtype=np.float32)
@@ -113,11 +121,18 @@ def run_tangent_space_pipeline(
             X_all_clean = apply_icalabel(X_all, sfreq, ch_names, l_freq, h_freq)
             X_train_proc = X_all_clean[: len(X_train_bp)]
             X_test_proc = X_all_clean[len(X_train_bp) :]
-        else:  # gedai
+        else:
             X_all = np.concatenate([X_train_bp, X_test_bp], axis=0)
-            X_all_clean = apply_gedai(
-                X_all, sfreq, ch_names, l_freq, h_freq
-            )
+            if denoising == "gedai":
+                X_all_clean = apply_gedai(
+                    X_all, sfreq, ch_names, l_freq, h_freq
+                )
+            elif denoising == "asr":
+                X_all_clean = apply_asr(X_all, sfreq, ch_names, l_freq, h_freq)
+            else:
+                X_all_clean = apply_pylossless(
+                    X_all, sfreq, ch_names, l_freq, h_freq
+                )
             X_train_proc = X_all_clean[: len(X_train_bp)]
             X_test_proc = X_all_clean[len(X_train_bp) :]
 
@@ -168,16 +183,24 @@ def run_tangent_cv_precomputed_features(
     """Run logistic-regression CV using precomputed tangent features."""
     y = np.asarray(y)
     fold_accuracies: List[float] = []
+    pooled_correct = 0
+    pooled_total = 0
 
     for (train_idx, test_idx), (X_train_feat, X_test_feat) in zip(cv_splits, fold_features):
         y_train = y[train_idx]
         y_test = y[test_idx]
         clf = LogisticRegression(solver="lbfgs", max_iter=1000)
         clf.fit(X_train_feat, y_train)
-        acc = clf.score(X_test_feat, y_test)
-        fold_accuracies.append(float(acc))
+        pred = clf.predict(X_test_feat)
+        pooled_correct += int(np.sum(pred == y_test))
+        pooled_total += int(len(y_test))
+        fold_accuracies.append(float(np.mean(pred == y_test)))
 
-    return TangentSpaceResult(fold_accuracies=fold_accuracies)
+    return TangentSpaceResult(
+        fold_accuracies=fold_accuracies,
+        pooled_test_correct=pooled_correct,
+        pooled_test_total=pooled_total,
+    )
 
 
 def run_tangent_cv_preprocessed(
@@ -206,8 +229,12 @@ def fit_tangent_model(
         X_proc = X_bp
     elif denoising == "icalabel":
         X_proc = apply_icalabel(X_bp, sfreq, ch_names, l_freq, h_freq)
-    else:
+    elif denoising == "gedai":
         X_proc = apply_gedai(X_bp, sfreq, ch_names, l_freq, h_freq)
+    elif denoising == "asr":
+        X_proc = apply_asr(X_bp, sfreq, ch_names, l_freq, h_freq)
+    else:
+        X_proc = apply_pylossless(X_bp, sfreq, ch_names, l_freq, h_freq)
     covs = _covariance_matrices(X_proc)
     C_ref = _riemannian_mean(covs)
     X_feat = _tangent_space_projection(covs, C_ref)

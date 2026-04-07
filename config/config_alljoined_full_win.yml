@@ -20,9 +20,15 @@ cv:
   shuffle: true
   random_state: 42
 
+# Professor: large trial counts → binomial vs chance (1/K); Mann–Whitney between pipelines.
+# n_subject_level / n_pipeline_level unused when using those methods (kept for optional permutation).
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
 permutation:
-  n_subject_level: 10
-  n_pipeline_level: 100
+  n_subject_level: 0
+  n_pipeline_level: 10000
 
 memory:
   float_dtype: float32

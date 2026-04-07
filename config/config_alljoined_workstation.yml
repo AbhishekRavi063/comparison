@@ -4,7 +4,8 @@
 # Parallel strategy: run 4 shards (e.g. scripts/run_alljoined_shards.ps1), each with
 # disjoint --subjects and --results-root, then merge:
 #   python -m src.merge_sharded_results --shards results/alljoined_w1 ... results/alljoined_w4 \
-#     --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai
+#     --out results/alljoined_merged --n-pipeline-perm 10000 --pipelines baseline,gedai \
+#     --pipeline-comparison-method mann_whitney
 #
 # Download all EDFs first (10-day window friendly):
 #   python -m src.data.prepare_alljoined --subjects 1 2 ... 20 --all-edfs --workers 3 --out-root data/alljoined/processed
@@ -26,16 +27,26 @@ cv:
   shuffle: true
   random_state: 42
 
+# n_subject_level ignored when statistics.subject_chance_method is binomial.
 permutation:
-  n_subject_level: 1000
+  n_subject_level: 0
   n_pipeline_level: 10000
-  adaptive_step_up: true
+  adaptive_step_up: false
+
+# Professor: large trial counts → exact binomial vs chance (1/K); Mann–Whitney between pipelines.
+# For paired same-subject accuracies, consider statistics.pipeline_comparison_method: wilcoxon.
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
 
 memory:
   float_dtype: float32
   # GEDAI internal parallelism; with 4 shard processes use ~4 here (4×4≈16 threads).
   n_jobs: 4
   save_models: true
+  # Full denoised trial arrays per (subject, pipeline) for cloud/offline work (~TB for 20 subs).
+  save_denoised_npz: true
+  denoised_subdir: denoised
 
 backbones:
   use_csp: true

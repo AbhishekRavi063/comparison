@@ -20,7 +20,12 @@ from typing import List, Tuple
 
 import pandas as pd
 
-from .evaluation.metrics import cohen_d_pooled, paired_permutation_p_value
+from .evaluation.metrics import (
+    cohen_d_pooled,
+    mann_whitney_pipeline_p_value,
+    paired_permutation_p_value,
+    wilcoxon_paired_pipeline_p_value,
+)
 
 
 def _per_subject_means(df: pd.DataFrame) -> pd.DataFrame:
@@ -37,6 +42,7 @@ def merge_pipeline_comparisons(
     df_subject: pd.DataFrame,
     n_pipeline_perm: int,
     pipelines: List[str],
+    pipeline_comparison_method: str = "permutation",
 ) -> pd.DataFrame:
     """Match experiment.run_experiment between-pipeline logic (paired tests on subject means)."""
     g = _per_subject_means(df_subject)
@@ -45,6 +51,9 @@ def merge_pipeline_comparisons(
         ("gedai", "baseline"),
         ("icalabel", "baseline"),
         ("gedai", "icalabel"),
+        ("pylossless", "baseline"),
+        ("gedai", "pylossless"),
+        ("icalabel", "pylossless"),
     ]
     rows = []
     for backbone in backbones:
@@ -62,9 +71,15 @@ def merge_pipeline_comparisons(
                 continue
             scores1 = d1.loc[common].values.astype(float)
             scores2 = d2.loc[common].values.astype(float)
-            p_val = paired_permutation_p_value(
-                scores1, scores2, n_resamples=n_pipeline_perm
-            )
+            pcm = pipeline_comparison_method.lower()
+            if pcm == "mann_whitney":
+                p_val = mann_whitney_pipeline_p_value(scores1, scores2)
+            elif pcm == "wilcoxon":
+                p_val = wilcoxon_paired_pipeline_p_value(scores1, scores2)
+            else:
+                p_val = paired_permutation_p_value(
+                    scores1, scores2, n_resamples=n_pipeline_perm
+                )
             d_eff = cohen_d_pooled(scores1, scores2)
             rows.append(
                 {
@@ -73,9 +88,17 @@ def merge_pipeline_comparisons(
                     "p_value": p_val,
                     "cohen_d": d_eff,
                     "mean_diff": float(scores1.mean() - scores2.mean()),
+                    "comparison_method": pcm,
                 }
             )
-    col_names = ["backbone", "comparison", "p_value", "cohen_d", "mean_diff"]
+    col_names = [
+        "backbone",
+        "comparison",
+        "p_value",
+        "cohen_d",
+        "mean_diff",
+        "comparison_method",
+    ]
     out = pd.DataFrame(rows)
     if out.empty:
         out = pd.DataFrame(columns=col_names)
@@ -116,6 +139,18 @@ def main() -> None:
         action="store_true",
         help="Also copy results/shard/models/*.joblib into out/models/ (name collisions must not occur).",
     )
+    parser.add_argument(
+        "--pipeline-comparison-method",
+        type=str,
+        default="permutation",
+        choices=("permutation", "mann_whitney", "wilcoxon"),
+        help="Must match the YAML statistics.pipeline_comparison_method used in shards.",
+    )
+    parser.add_argument(
+        "--copy-denoised",
+        action="store_true",
+        help="Copy each shard's denoised/*.npz into out/denoised/ (subject ids must not collide across shards).",
+    )
     args = parser.parse_args()
 
     shard_paths = [Path(s).resolve() for s in args.shards]
@@ -144,7 +179,12 @@ def main() -> None:
     merged.to_csv(tables_out / "subject_level_performance.csv", index=False)
 
     pipelines = [p.strip() for p in args.pipelines.split(",") if p.strip()]
-    df_comp = merge_pipeline_comparisons(merged, args.n_pipeline_perm, pipelines)
+    df_comp = merge_pipeline_comparisons(
+        merged,
+        args.n_pipeline_perm,
+        pipelines,
+        pipeline_comparison_method=args.pipeline_comparison_method,
+    )
     df_comp.to_csv(stats_out / "pipeline_comparisons.csv", index=False)
 
     if args.copy_models:
@@ -158,6 +198,19 @@ def main() -> None:
                 dest = models_out / f.name
                 if dest.exists():
                     raise SystemExit(f"Model name collision: {dest}")
+                shutil.copy2(f, dest)
+
+    if args.copy_denoised:
+        den_out = out_root / "denoised"
+        den_out.mkdir(parents=True, exist_ok=True)
+        for sp in shard_paths:
+            dd = sp / "denoised"
+            if not dd.is_dir():
+                continue
+            for f in dd.glob("*.npz"):
+                dest = den_out / f.name
+                if dest.exists():
+                    raise SystemExit(f"Denoised file name collision: {dest}")
                 shutil.copy2(f, dest)
 
     print(f"Wrote {tables_out / 'subject_level_performance.csv'}")
