@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument(
         "--pipeline-comparison-method",
         type=str,
-        default="permutation",
+        default="mann_whitney",
         choices=("permutation", "mann_whitney", "wilcoxon"),
         help="Must match the YAML statistics.pipeline_comparison_method used in shards.",
     )
