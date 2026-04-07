@@ -14,22 +14,63 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from tqdm import tqdm
 
 
-def _maybe_limit_trials(
+def _apply_max_trials_smoke(
+    cfg: "ExperimentConfig",
     X: np.ndarray,
     y: np.ndarray,
-    max_trials: int | None,
-    cv_random_state: int,
     subject_id: int,
     log: logging.Logger,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Stratified subsample when max_trials is set and data is larger (smoke runs)."""
+    """When ``max_trials`` is set: cap size for fast smoke runs.
+
+    - **Many-class** data (e.g. Alljoined image categories): take a **balanced binary**
+      subset using the two most frequent labels (``n`` trials per class,
+      ``n = min(max_trials // 2, counts…)``, each side at least ``cv.n_splits``).
+    - **Binary** data: stratified subsample to ``max_trials`` when possible.
+    """
+    max_trials = cfg.max_trials
     if max_trials is None or max_trials <= 0:
         return X, y
+
+    y = np.asarray(y)
+    X = np.asarray(X)
     n = int(X.shape[0])
+    n_splits = int(cfg.cv.n_splits)
+    rs = int(cfg.cv.random_state) + int(subject_id) * 1_000_003
+    rng = np.random.RandomState(rs)
+
+    if len(np.unique(y)) > 2:
+        uni, counts = np.unique(y, return_counts=True)
+        order = np.argsort(-counts)
+        c0 = uni[order[0]]
+        c1 = uni[order[1]]
+        i0 = np.flatnonzero(y == c0)
+        i1 = np.flatnonzero(y == c1)
+        half_budget = max_trials // 2
+        per = min(half_budget, len(i0), len(i1))
+        if per < n_splits:
+            raise ValueError(
+                f"Subject {subject_id}: max_trials={max_trials} is too small for "
+                f"cv.n_splits={n_splits} on many-class data. After picking the two "
+                f"most frequent classes ({c0}, {c1}), each has at least "
+                f"{per} usable trials; need >= n_splits per class. "
+                f"Increase max_trials (e.g. {2 * n_splits * 20}) or lower cv.n_splits."
+            )
+        rng.shuffle(i0)
+        rng.shuffle(i1)
+        idx = np.concatenate([i0[:per], i1[:per]])
+        rng.shuffle(idx)
+        y_bin = (y[idx] == c1).astype(np.int64)
+        log.info(
+            f"Subject {subject_id}: smoke — binary subset (most frequent classes "
+            f"{c0} vs {c1}), {len(idx)} trials (max_trials={max_trials})."
+        )
+        return X[idx].copy(), y_bin
+
     if n <= max_trials:
         return X, y
+
     train_size = min(max_trials, n)
-    rs = int(cv_random_state) + int(subject_id) * 1_000_003
     try:
         sss = StratifiedShuffleSplit(
             n_splits=1, train_size=train_size, random_state=rs
@@ -161,14 +202,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         log.info(f"Subject {sid}/{n_subj} started (n_trials={subj_data.X.shape[0]})")
         _log_memory_if_debug(log)
         X, y = subj_data.X, subj_data.y
-        X, y = _maybe_limit_trials(
-            X,
-            y,
-            cfg.max_trials,
-            cfg.cv.random_state,
-            sid,
-            log,
-        )
+        X, y = _apply_max_trials_smoke(cfg, X, y, sid, log)
         cv = StratifiedKFold(
             n_splits=cfg.cv.n_splits,
             shuffle=cfg.cv.shuffle,

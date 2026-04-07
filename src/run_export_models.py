@@ -8,7 +8,7 @@ import joblib
 
 from .config import ExperimentConfig
 from .denoising.pipelines import preprocess_subject_data
-from .evaluation.experiment import _maybe_limit_trials
+from .evaluation.experiment import _apply_max_trials_smoke
 from .io.dataset import NpzMotorImageryDataset
 from .backbones.csp import fit_csp_model_preprocessed
 from .backbones.tangent_space import fit_tangent_model_preprocessed
@@ -56,9 +56,7 @@ def main() -> None:
 
     for sid, subj_data in dataset.iter_subjects():
         X, y = subj_data.X, subj_data.y
-        X, y = _maybe_limit_trials(
-            X, y, cfg.max_trials, cfg.cv.random_state, sid, log
-        )
+        X, y = _apply_max_trials_smoke(cfg, X, y, sid, log)
         for pipeline in pipelines:
             X_proc = preprocess_subject_data(
                 X=X,

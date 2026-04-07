@@ -4,7 +4,8 @@
 # Prerequisite: processed NPZ for subject 1 (see scripts/smoke_alljoined_1sub.sh or .ps1).
 # RUN: python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
 #
-# Cap trials so smoke stays fast (stratified subsample). Omit or null for full subject.
+# Cap trials for a fast smoke run. Many-class Alljoined data → two most frequent labels,
+# balanced subset (binary) so CSP/LDA + StratifiedKFold stay valid. Omit or null for full subject.
 
 data_root: ./data/alljoined/processed
 max_trials: 512
