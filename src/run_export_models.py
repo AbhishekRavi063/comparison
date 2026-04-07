@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import joblib
 
 from .config import ExperimentConfig
 from .denoising.pipelines import preprocess_subject_data
+from .evaluation.experiment import _maybe_limit_trials
 from .io.dataset import NpzMotorImageryDataset
 from .backbones.csp import fit_csp_model_preprocessed
 from .backbones.tangent_space import fit_tangent_model_preprocessed
@@ -24,6 +26,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    log = logging.getLogger("run_export_models")
     cfg = ExperimentConfig.from_yaml(args.config)
     dataset = NpzMotorImageryDataset(
         data_root=cfg.data_root,
@@ -53,6 +56,9 @@ def main() -> None:
 
     for sid, subj_data in dataset.iter_subjects():
         X, y = subj_data.X, subj_data.y
+        X, y = _maybe_limit_trials(
+            X, y, cfg.max_trials, cfg.cv.random_state, sid, log
+        )
         for pipeline in pipelines:
             X_proc = preprocess_subject_data(
                 X=X,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -85,6 +85,8 @@ class ExperimentConfig:
     signal_integrity: SignalIntegrityConfig
     statistics: StatisticsConfig
     dataset_label: str | None = None  # e.g. "physionet_eegbci"; for cross-dataset report
+    # If set, stratified subsample to at most this many trials per subject (smoke / fast runs).
+    max_trials: Optional[int] = None
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
@@ -132,4 +134,9 @@ class ExperimentConfig:
             signal_integrity=SignalIntegrityConfig(**cfg["signal_integrity"]),
             statistics=statistics,
             dataset_label=cfg.get("dataset_label"),
+            max_trials=(
+                int(cfg["max_trials"])
+                if cfg.get("max_trials") is not None
+                else None
+            ),
         )

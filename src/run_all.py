@@ -37,9 +37,19 @@ def main() -> None:
         default=None,
         help="Override results_root from YAML (for parallel shard runs).",
     )
+    parser.add_argument(
+        "--max-trials",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override: stratified subsample to at most N trials per subject (smoke / speed).",
+    )
     args = parser.parse_args()
 
     cfg = ExperimentConfig.from_yaml(args.config)
+
+    if args.max_trials is not None:
+        cfg.max_trials = int(args.max_trials)
 
     if args.results_root is not None:
         cfg.results_root = Path(args.results_root)

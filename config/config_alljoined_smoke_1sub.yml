@@ -3,8 +3,11 @@
 #
 # Prerequisite: processed NPZ for subject 1 (see scripts/smoke_alljoined_1sub.sh or .ps1).
 # RUN: python -m src.run_all --config config/config_alljoined_smoke_1sub.yml
+#
+# Cap trials so smoke stays fast (stratified subsample). Omit or null for full subject.
 
 data_root: ./data/alljoined/processed
+max_trials: 512
 results_root: ./results/alljoined_smoke_1sub
 dataset_label: alljoined_1.6m
 

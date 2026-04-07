@@ -10,8 +10,41 @@ from typing import Dict, List, Tuple
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from tqdm import tqdm
+
+
+def _maybe_limit_trials(
+    X: np.ndarray,
+    y: np.ndarray,
+    max_trials: int | None,
+    cv_random_state: int,
+    subject_id: int,
+    log: logging.Logger,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Stratified subsample when max_trials is set and data is larger (smoke runs)."""
+    if max_trials is None or max_trials <= 0:
+        return X, y
+    n = int(X.shape[0])
+    if n <= max_trials:
+        return X, y
+    train_size = min(max_trials, n)
+    rs = int(cv_random_state) + int(subject_id) * 1_000_003
+    try:
+        sss = StratifiedShuffleSplit(
+            n_splits=1, train_size=train_size, random_state=rs
+        )
+        train_idx, _ = next(sss.split(np.zeros((n, 1)), y))
+    except ValueError as exc:
+        log.warning(
+            f"Subject {subject_id}: stratified subsample to {train_size} failed ({exc}); "
+            f"using first {train_size} trials."
+        )
+        return X[:train_size].copy(), y[:train_size].copy()
+    log.info(
+        f"Subject {subject_id}: using {train_size} of {n} trials (max_trials cap)."
+    )
+    return X[train_idx].copy(), y[train_idx].copy()
 
 
 def _log_memory_if_debug(log) -> None:
@@ -128,6 +161,14 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         log.info(f"Subject {sid}/{n_subj} started (n_trials={subj_data.X.shape[0]})")
         _log_memory_if_debug(log)
         X, y = subj_data.X, subj_data.y
+        X, y = _maybe_limit_trials(
+            X,
+            y,
+            cfg.max_trials,
+            cfg.cv.random_state,
+            sid,
+            log,
+        )
         cv = StratifiedKFold(
             n_splits=cfg.cv.n_splits,
             shuffle=cfg.cv.shuffle,
