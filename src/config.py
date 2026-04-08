@@ -52,6 +52,9 @@ class StatisticsConfig:
 class BackboneConfig:
     use_csp: bool
     use_tangent_space: bool
+    # CSP filters are defined for binary classification; default to skipping CSP
+    # when labels are multi-class unless explicitly enabled.
+    allow_csp_multiclass: bool = False
 
 
 @dataclass
@@ -87,6 +90,12 @@ class ExperimentConfig:
     dataset_label: str | None = None  # e.g. "physionet_eegbci"; for cross-dataset report
     # If set, stratified subsample to at most this many trials per subject (smoke / fast runs).
     max_trials: Optional[int] = None
+    # Optional cap on number of classes when max_trials_strategy=multiclass_topk.
+    max_trials_top_k: Optional[int] = None
+    # How to handle max_trials when labels are multi-class:
+    # - "binary_for_multiclass": legacy behavior (top-2 classes -> binary)
+    # - "multiclass_topk": balanced subset over the most frequent K classes
+    max_trials_strategy: str = "binary_for_multiclass"
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
@@ -139,4 +148,10 @@ class ExperimentConfig:
                 if cfg.get("max_trials") is not None
                 else None
             ),
+            max_trials_top_k=(
+                int(cfg["max_trials_top_k"])
+                if cfg.get("max_trials_top_k") is not None
+                else None
+            ),
+            max_trials_strategy=str(cfg.get("max_trials_strategy", "binary_for_multiclass")),
         )

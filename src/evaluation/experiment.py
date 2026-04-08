@@ -40,32 +40,79 @@ def _apply_max_trials_smoke(
     rng = np.random.RandomState(rs)
 
     if len(np.unique(y)) > 2:
+        strategy = str(getattr(cfg, "max_trials_strategy", "binary_for_multiclass"))
         uni, counts = np.unique(y, return_counts=True)
         order = np.argsort(-counts)
-        c0 = uni[order[0]]
-        c1 = uni[order[1]]
-        i0 = np.flatnonzero(y == c0)
-        i1 = np.flatnonzero(y == c1)
-        half_budget = max_trials // 2
-        per = min(half_budget, len(i0), len(i1))
-        if per < n_splits:
-            raise ValueError(
-                f"Subject {subject_id}: max_trials={max_trials} is too small for "
-                f"cv.n_splits={n_splits} on many-class data. After picking the two "
-                f"most frequent classes ({c0}, {c1}), each has at least "
-                f"{per} usable trials; need >= n_splits per class. "
-                f"Increase max_trials (e.g. {2 * n_splits * 20}) or lower cv.n_splits."
+
+        if strategy == "binary_for_multiclass":
+            c0 = uni[order[0]]
+            c1 = uni[order[1]]
+            i0 = np.flatnonzero(y == c0)
+            i1 = np.flatnonzero(y == c1)
+            half_budget = max_trials // 2
+            per = min(half_budget, len(i0), len(i1))
+            if per < n_splits:
+                raise ValueError(
+                    f"Subject {subject_id}: max_trials={max_trials} is too small for "
+                    f"cv.n_splits={n_splits} on many-class data. After picking the two "
+                    f"most frequent classes ({c0}, {c1}), each has at least "
+                    f"{per} usable trials; need >= n_splits per class. "
+                    f"Increase max_trials (e.g. {2 * n_splits * 20}) or lower cv.n_splits."
+                )
+            rng.shuffle(i0)
+            rng.shuffle(i1)
+            idx = np.concatenate([i0[:per], i1[:per]])
+            rng.shuffle(idx)
+            y_bin = (y[idx] == c1).astype(np.int64)
+            log.info(
+                f"Subject {subject_id}: smoke — binary subset (most frequent classes "
+                f"{c0} vs {c1}), {len(idx)} trials (max_trials={max_trials})."
             )
-        rng.shuffle(i0)
-        rng.shuffle(i1)
-        idx = np.concatenate([i0[:per], i1[:per]])
+            return X[idx].copy(), y_bin
+
+        if strategy != "multiclass_topk":
+            raise ValueError(
+                f"Subject {subject_id}: unknown max_trials_strategy='{strategy}'. "
+                "Use 'binary_for_multiclass' or 'multiclass_topk'."
+            )
+
+        # Balanced multi-class subset across the most frequent K classes.
+        # Choose largest K (optionally capped) such that per-class >= n_splits
+        # and total <= max_trials.
+        sorted_classes = uni[order]
+        sorted_counts = counts[order]
+        k_cap = int(getattr(cfg, "max_trials_top_k", 0) or 0)
+        k_max = min(len(sorted_classes), k_cap) if k_cap > 0 else len(sorted_classes)
+        chosen_k = None
+        chosen_per = None
+        for k in range(k_max, 1, -1):
+            per_class = min(int(max_trials // k), int(np.min(sorted_counts[:k])))
+            if per_class >= n_splits:
+                chosen_k = k
+                chosen_per = per_class
+                break
+
+        if chosen_k is None or chosen_per is None:
+            raise ValueError(
+                f"Subject {subject_id}: max_trials={max_trials} too small for "
+                f"cv.n_splits={n_splits} in multiclass_topk mode. Increase max_trials, "
+                f"lower cv.n_splits, or reduce max_trials_top_k."
+            )
+
+        picked_classes = sorted_classes[:chosen_k]
+        idx_parts = []
+        for c in picked_classes:
+            idx_c = np.flatnonzero(y == c)
+            rng.shuffle(idx_c)
+            idx_parts.append(idx_c[:chosen_per])
+        idx = np.concatenate(idx_parts)
         rng.shuffle(idx)
-        y_bin = (y[idx] == c1).astype(np.int64)
         log.info(
-            f"Subject {subject_id}: smoke — binary subset (most frequent classes "
-            f"{c0} vs {c1}), {len(idx)} trials (max_trials={max_trials})."
+            f"Subject {subject_id}: smoke — multiclass_topk subset "
+            f"(K={chosen_k}, per_class={chosen_per}, total={len(idx)}, "
+            f"max_trials={max_trials})."
         )
-        return X[idx].copy(), y_bin
+        return X[idx].copy(), y[idx].copy()
 
     if n <= max_trials:
         return X, y
@@ -203,6 +250,14 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         _log_memory_if_debug(log)
         X, y = subj_data.X, subj_data.y
         X, y = _apply_max_trials_smoke(cfg, X, y, sid, log)
+        n_classes = int(len(np.unique(y)))
+        backbones_this = list(backbones)
+        if n_classes > 2 and "csp" in backbones_this and not cfg.backbones.allow_csp_multiclass:
+            backbones_this = [b for b in backbones_this if b != "csp"]
+            log.warning(
+                f"Subject {sid}: {n_classes} classes detected. "
+                "Skipping CSP (binary-only) unless backbones.allow_csp_multiclass=true."
+            )
         cv = StratifiedKFold(
             n_splits=cfg.cv.n_splits,
             shuffle=cfg.cv.shuffle,
@@ -317,7 +372,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             use_chance_binom = cfg.statistics.subject_chance_method == "binomial"
             n_classes = int(len(np.unique(y)))
 
-            for backbone in backbones:
+            for backbone in backbones_this:
                 if backbone == "csp":
                     res = run_csp_cv_preprocessed(X_proc=X_proc, y=y, cv_splits=cv_splits)
                 else:
