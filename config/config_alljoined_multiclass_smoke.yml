@@ -2,13 +2,13 @@
 # RUN: MPLBACKEND=Agg python3 -m src.run_all --config config/config_alljoined_multiclass_smoke.yml
 
 data_root: ./data/alljoined/processed
-max_trials: 300
+max_trials: null
 max_trials_strategy: multiclass_topk
-max_trials_top_k: 20
+max_trials_top_k: 100
 results_root: ./results/alljoined_multiclass_smoke
 dataset_label: alljoined_1.6m
 
-subjects: [1, 2, 3, 4, 5]
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 
 sampling_rate: 250
 
