@@ -33,7 +33,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Check alpha/beta preservation across pipelines.")
     parser.add_argument("--config", default="config/config_alljoined_smoke_1sub.yml")
     parser.add_argument("--subject", type=int, default=1)
-    parser.add_argument("--channel", default="C3", help="Channel for PSD (e.g. C3, C4)")
+    parser.add_argument(
+        "--channel",
+        default="auto",
+        help="Channel for PSD (e.g. C3, C4). Use 'auto' to pick a motor channel.",
+    )
     args = parser.parse_args()
 
     cfg = ExperimentConfig.from_yaml(args.config)
@@ -54,11 +58,26 @@ def main() -> None:
     sfreq = subj_data.sfreq
     ch_names = list(subj_data.ch_names)
     ch_upper = [c.upper() for c in ch_names]
+    preferred = ["C3", "C4", "CZ", "FC3", "FC4", "CP3", "CP4"]
+    if args.channel.lower() == "auto":
+        chosen = None
+        for p in preferred:
+            if p in ch_upper:
+                chosen = p
+                break
+        if chosen is None:
+            chosen = ch_names[0].upper()
+        args.channel = chosen
+
     try:
         ch_idx = ch_upper.index(args.channel.upper())
     except ValueError:
         ch_idx = 0
         args.channel = ch_names[0]
+        print(
+            f"Requested channel not found. Using {args.channel}. "
+            f"Available channels (first 10): {ch_names[:10]}"
+        )
 
     l_freq, h_freq = cfg.bandpass.l_freq, cfg.bandpass.h_freq
     X_bp = bandpass_filter(X, sfreq, l_freq, h_freq)
@@ -111,6 +130,10 @@ def main() -> None:
         if r_alpha < 0.75 or r_beta < 0.75:
             flag = "  ⚠ possible over-removal"
         print(f"{name:<12} {r_alpha:>18.4f} {r_beta:>18.4f}{flag}")
+    if ref_alpha <= 0:
+        print("Note: reference alpha power is ~0 for this channel; alpha ratios may be NaN.")
+    if ref_beta <= 0:
+        print("Note: reference beta power is ~0 for this channel; beta ratios may be NaN.")
     print("-" * 60)
     print("Per-trial minimum ratio (worst trial):")
     print(f"  Alpha: {min_alpha_ratio:.4f}  Beta: {min_beta_ratio:.4f}")
