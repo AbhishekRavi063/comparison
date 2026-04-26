@@ -161,6 +161,29 @@ def build_tangent_features_for_splits(
     X_proc = np.asarray(X_proc, dtype=np.float32)
     fold_features: List[Tuple[np.ndarray, np.ndarray]] = []
 
+    try:
+        from pyriemann.estimation import Covariances
+        from pyriemann.tangentspace import TangentSpace
+
+        cov_est = Covariances(estimator="oas")
+        for train_idx, test_idx in cv_splits:
+            X_train = X_proc[train_idx]
+            X_test = X_proc[test_idx]
+            cov_train = cov_est.fit_transform(X_train)
+            cov_test = cov_est.transform(X_test)
+            ts = TangentSpace()
+            X_train_feat = ts.fit_transform(cov_train)
+            X_test_feat = ts.transform(cov_test)
+            fold_features.append(
+                (
+                    X_train_feat.astype(np.float32, copy=False),
+                    X_test_feat.astype(np.float32, copy=False),
+                )
+            )
+        return fold_features
+    except Exception:
+        pass
+
     for train_idx, test_idx in cv_splits:
         X_train = X_proc[train_idx]
         X_test = X_proc[test_idx]
@@ -263,9 +286,19 @@ def fit_tangent_model_preprocessed(
 ) -> dict:
     """Train tangent-space + LogReg on already-preprocessed data."""
     X_proc = np.asarray(X_proc, dtype=np.float32)
-    covs = _covariance_matrices(X_proc)
-    C_ref = _riemannian_mean(covs)
-    X_feat = _tangent_space_projection(covs, C_ref)
+    C_ref = None
+    try:
+        from pyriemann.estimation import Covariances
+        from pyriemann.tangentspace import TangentSpace
+
+        covs = Covariances(estimator="oas").fit_transform(X_proc)
+        ts = TangentSpace()
+        X_feat = ts.fit_transform(covs).astype(np.float32, copy=False)
+        C_ref = getattr(ts, "reference_", None)
+    except Exception:
+        covs = _covariance_matrices(X_proc)
+        C_ref = _riemannian_mean(covs)
+        X_feat = _tangent_space_projection(covs, C_ref)
     clf = LogisticRegression(solver="lbfgs", max_iter=1000)
     clf.fit(X_feat, y)
     return {

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import ExperimentConfig
 from src.denoising.pipelines import bandpass_filter, apply_icalabel, apply_gedai
+from src.evaluation.experiment import _apply_max_trials_smoke
 from src.io.dataset import NpzMotorImageryDataset
 
 
@@ -55,6 +56,10 @@ def main() -> None:
         raise SystemExit(f"Subject {args.subject} not found.")
 
     X = subj_data.X
+    class _NullLog:
+        def info(self, *_args, **_kwargs):  # pragma: no cover - tiny helper
+            pass
+    X, _y = _apply_max_trials_smoke(cfg, X, subj_data.y, args.subject, _NullLog())
     sfreq = subj_data.sfreq
     ch_names = list(subj_data.ch_names)
     ch_upper = [c.upper() for c in ch_names]

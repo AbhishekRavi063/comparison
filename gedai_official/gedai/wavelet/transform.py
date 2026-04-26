@@ -24,13 +24,15 @@ def _process_epoch_wavelet(epoch_data, wavelet, level):
         Transformed epoch with shape (n_channels, level+1, n_times).
     """
     n_channels, n_times = epoch_data.shape
-    transformed_epoch = np.zeros((n_channels, level + 1, n_times), dtype=np.float32)
+    transformed_epoch = np.zeros((n_channels, level + 1, n_times))
 
     for c, ch_data in enumerate(epoch_data):
-        coeffs = modwt(ch_data, wavelet, level)
-        modwtmra_data = modwtmra(coeffs, wavelet)
+        # n_jobs=1: this function is already dispatched in parallel over epochs;
+        # using n_jobs>1 here would cause oversubscription.
+        coeffs = modwt(ch_data, wavelet, level, n_jobs=1)
+        modwtmra_data = modwtmra(coeffs, wavelet, n_jobs=1)
         modwtmra_data = np.squeeze(modwtmra_data, axis=-1)
-        transformed_epoch[c, :, :] = modwtmra_data.astype(np.float32, copy=False)
+        transformed_epoch[c, :, :] = modwtmra_data
 
     return transformed_epoch
 
@@ -71,21 +73,17 @@ def epochs_to_wavelet(epochs, wavelet, level, n_jobs=None, verbose=None):
         freq_bands = [(0, sfreq / 2)]
         levels = 0
     else:
+        # freq_bands matches MRA band order:
+        #   [D_1(highest freq), D_2, ..., D_L(lowest freq detail), S_L(approx)]
         freq_bands = []
-
-        # Approximation (index 0): lowest frequencies
+        for k in range(1, level + 1):
+            freq_bands.append((sfreq / (2 ** (k + 1)), sfreq / (2 ** k)))
         freq_bands.append((0, sfreq / (2 ** (level + 1))))
-
-        # Details (indices 1 to level): from coarse to fine
-        for i in range(level, 0, -1):
-            fmin = sfreq / (2 ** (i + 1))
-            fmax = sfreq / (2**i)
-            freq_bands.append((fmin, fmax))
 
         # Parallelize the wavelet transform across epochs
         if n_jobs == 1:
             # Sequential processing
-            transformed_data = np.zeros((n_epochs, n_channels, level + 1, n_times), dtype=np.float32)
+            transformed_data = np.zeros((n_epochs, n_channels, level + 1, n_times))
             for e, epoch in enumerate(epochs_data):
                 transformed_data[e] = _process_epoch_wavelet(epoch, wavelet, level)
         else:
@@ -94,7 +92,7 @@ def epochs_to_wavelet(epochs, wavelet, level, n_jobs=None, verbose=None):
             transformed_epochs = parallel(
                 p_fun(epoch, wavelet, level) for epoch in epochs_data
             )
-            transformed_data = np.array(transformed_epochs, dtype=np.float32)
+            transformed_data = np.array(transformed_epochs)
 
         levels = level
 

@@ -1,0 +1,51 @@
+# Small Alljoined debug run: fast enough to iterate on denoising issues.
+
+data_root: ./data/alljoined/processed
+max_trials: 300
+max_trials_strategy: multiclass_topk
+max_trials_top_k: 20
+results_root: ./results/alljoined_multiclass_debug
+dataset_label: alljoined_1.6m
+
+subjects: [1]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 1.0
+  h_freq: 40.0
+
+cv:
+  n_splits: 2
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 200
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["Cz", "CP3", "CP4", "O1", "O2"]
+  segment_duration_s: 2.0
+
+generate_plots: false

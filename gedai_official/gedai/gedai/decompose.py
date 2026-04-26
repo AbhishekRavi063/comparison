@@ -8,11 +8,11 @@ def _clean_epochs(epochs_data, reference_cov, threshold):
     artefact_epochs = np.zeros_like(epochs_data)
 
     for e, epoch_data in enumerate(epochs_data):
-        covariance = np.atleast_2d(np.cov(epoch_data))
+        covariance = np.cov(epoch_data)
         eigenvalues, eigenvectors = eigh(covariance, reference_cov, check_finite=True)
 
         # Compute spatial maps
-        maps = np.linalg.inv(eigenvectors.T)
+        maps = np.linalg.pinv(eigenvectors).T
         eigenvectors_filtered = eigenvectors.copy()
 
         # Zero out components with small eigenvalues

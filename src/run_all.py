@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from pathlib import Path
 
 from .config import ExperimentConfig
 from .evaluation.experiment import run_experiment
 
 
+def _configure_logging() -> None:
+    """Ensure INFO-level logs (including ``mrcp_diag``) reach stdout."""
+    root = logging.getLogger()
+    if not root.handlers:
+        h = logging.StreamHandler(sys.stdout)
+        h.setLevel(logging.INFO)
+        h.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        root.addHandler(h)
+    root.setLevel(logging.INFO)
+    for name in ("run_full_test", "mrcp_diag"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.INFO)
+        lg.propagate = True
+
+
 def main() -> None:
+    _configure_logging()
     parser = argparse.ArgumentParser(
         description="Run systematic EEG denoising benchmark (CSP and Tangent Space)."
     )

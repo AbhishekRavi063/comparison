@@ -1,0 +1,48 @@
+data_root: ./data/eeg_emg_mrcp/processed
+results_root: ./results/eeg_emg_mrcp_smoke_time_lda
+dataset_label: eeg_emg_mrcp
+
+subjects: [1]
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 1.0
+
+cv:
+  n_splits: 2
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 200
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: true
+  use_time_lda: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: false
+  use_gedai_mrcp: false
+
+signal_integrity:
+  channels_of_interest: ["FC3", "FC1", "FCz", "C3", "C1", "Cz", "CP3", "CP1", "CPz"]
+  segment_duration_s: 4.0
+
+generate_plots: false

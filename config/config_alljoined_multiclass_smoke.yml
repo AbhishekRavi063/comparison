@@ -4,7 +4,7 @@
 data_root: ./data/alljoined/processed
 max_trials: null
 max_trials_strategy: multiclass_topk
-max_trials_top_k: 100
+max_trials_top_k: 50
 results_root: ./results/alljoined_multiclass_smoke
 dataset_label: alljoined_1.6m
 

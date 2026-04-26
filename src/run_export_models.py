@@ -12,6 +12,7 @@ from .evaluation.experiment import _apply_max_trials_smoke
 from .io.dataset import NpzMotorImageryDataset
 from .backbones.csp import fit_csp_model_preprocessed
 from .backbones.tangent_space import fit_tangent_model_preprocessed
+from .backbones.time_domain_lda import fit_time_lda_model_preprocessed
 
 
 def main() -> None:
@@ -47,12 +48,16 @@ def main() -> None:
         pipelines.append("pylossless")
     if getattr(cfg.denoising, "use_asr", False):
         pipelines.append("asr")
+    if getattr(cfg.denoising, "use_gedai_mrcp", False):
+        pipelines.append("gedai_mrcp")
 
     backbones = []
     if cfg.backbones.use_csp:
         backbones.append("csp")
     if cfg.backbones.use_tangent_space:
         backbones.append("tangent")
+    if getattr(cfg.backbones, "use_time_lda", False):
+        backbones.append("time_lda")
 
     for sid, subj_data in dataset.iter_subjects():
         X, y = subj_data.X, subj_data.y
@@ -65,10 +70,18 @@ def main() -> None:
                 l_freq=cfg.bandpass.l_freq,
                 h_freq=cfg.bandpass.h_freq,
                 denoising=pipeline,
-                subject_id=sid if pipeline in ("gedai", "pylossless") else None,
+                subject_id=sid if pipeline in ("gedai", "gedai_mrcp", "pylossless") else None,
                 dataset_name=cfg.dataset_label or "",
                 gedai_n_jobs=cfg.memory.n_jobs,
                 data_root=cfg.data_root,
+                y=y if pipeline == "gedai_mrcp" else None,
+                mrcp_refcov_prior=cfg.denoising.gedai_mrcp_prior,
+                mrcp_gedai_noise_multiplier=cfg.denoising.gedai_mrcp_noise_multiplier,
+                mrcp_gedai_retention_min=cfg.denoising.gedai_mrcp_retention_min,
+                mrcp_refcov_tmin_s=cfg.denoising.gedai_mrcp_refcov_tmin_s,
+                mrcp_refcov_rank_max=cfg.denoising.gedai_mrcp_refcov_rank_max,
+                mrcp_refcov_motor_weight=cfg.denoising.gedai_mrcp_refcov_motor_weight,
+                mrcp_refcov_move_mix=cfg.denoising.gedai_mrcp_refcov_move_mix,
             )
             for backbone in backbones:
                 if backbone == "csp":
@@ -81,7 +94,7 @@ def main() -> None:
                         h_freq=cfg.bandpass.h_freq,
                         denoising=pipeline,
                     )
-                else:
+                elif backbone == "tangent":
                     model = fit_tangent_model_preprocessed(
                         X_proc=X_proc,
                         y=y,
@@ -90,6 +103,17 @@ def main() -> None:
                         l_freq=cfg.bandpass.l_freq,
                         h_freq=cfg.bandpass.h_freq,
                         denoising=pipeline,
+                    )
+                else:
+                    model = fit_time_lda_model_preprocessed(
+                        X_proc=X_proc,
+                        y=y,
+                        sfreq=subj_data.sfreq,
+                        ch_names=subj_data.ch_names,
+                        l_freq=cfg.bandpass.l_freq,
+                        h_freq=cfg.bandpass.h_freq,
+                        denoising=pipeline,
+                        target_sfreq=getattr(cfg.backbones, "time_lda_target_sfreq", None),
                     )
                 out_path = models_dir / f"subject_{sid}_{backbone}_{pipeline}.joblib"
                 joblib.dump(model, out_path)

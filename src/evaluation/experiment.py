@@ -156,7 +156,12 @@ from ..backbones.tangent_space import (
     run_tangent_cv_precomputed_features,
     fit_tangent_model_preprocessed,
 )
-from ..denoising.pipelines import preprocess_subject_data
+from ..backbones.time_domain_lda import (
+    build_time_lda_features_for_splits,
+    run_time_lda_cv_precomputed_features,
+    fit_time_lda_model_preprocessed,
+)
+from ..denoising.pipelines import MRCP_MOTOR_CHANNELS, preprocess_subject_data
 from ..data.dataset_noise_inspection import (
     plot_denoising_comparison_overlay,
     plot_denoising_psd_comparison,
@@ -177,6 +182,39 @@ def _is_borderline_p_value(p_value: float, cfg: ExperimentConfig) -> bool:
     low = float(cfg.permutation.borderline_low)
     high = float(cfg.permutation.borderline_high)
     return low <= p_value <= high
+
+
+def _score_time_lda_inner_cv(
+    X_proc: np.ndarray,
+    y: np.ndarray,
+    sfreq: float,
+    target_sfreq: float | None,
+    n_splits: int,
+    random_state: int,
+) -> float:
+    y = np.asarray(y).ravel()
+    _, counts = np.unique(y, return_counts=True)
+    if counts.size < 2:
+        return float("-inf")
+    inner_splits = int(max(2, min(int(n_splits), int(np.min(counts)))))
+    cv = StratifiedKFold(
+        n_splits=inner_splits,
+        shuffle=True,
+        random_state=random_state,
+    )
+    splits = list(cv.split(X_proc, y))
+    feats = build_time_lda_features_for_splits(
+        X_proc=X_proc,
+        cv_splits=splits,
+        sfreq=sfreq,
+        target_sfreq=target_sfreq,
+    )
+    res = run_time_lda_cv_precomputed_features(
+        y=y,
+        cv_splits=splits,
+        fold_features=feats,
+    )
+    return float(np.mean(res.fold_accuracies))
 
 
 @dataclass
@@ -224,6 +262,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         pipelines.append("icalabel")
     if cfg.denoising.use_gedai:
         pipelines.append("gedai")
+    if getattr(cfg.denoising, "use_gedai_mrcp", False):
+        pipelines.append("gedai_mrcp")
     if getattr(cfg.denoising, "use_pylossless", False):
         pipelines.append("pylossless")
 
@@ -232,6 +272,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         backbones.append("csp")
     if cfg.backbones.use_tangent_space:
         backbones.append("tangent")
+    if getattr(cfg.backbones, "use_time_lda", False):
+        backbones.append("time_lda")
 
     log = logging.getLogger("run_full_test")
     n_subj = len(cfg.subjects)
@@ -250,6 +292,18 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         _log_memory_if_debug(log)
         X, y = subj_data.X, subj_data.y
         X, y = _apply_max_trials_smoke(cfg, X, y, sid, log)
+        eval_ch_idx = None
+        eval_ch_names = list(subj_data.ch_names)
+        if cfg.dataset_label and "eeg_emg_mrcp" in cfg.dataset_label.lower():
+            wanted = {c.upper() for c in MRCP_MOTOR_CHANNELS}
+            idx = [i for i, c in enumerate(subj_data.ch_names) if str(c).upper() in wanted]
+            if idx:
+                eval_ch_idx = np.asarray(idx, dtype=int)
+                eval_ch_names = [str(subj_data.ch_names[i]) for i in eval_ch_idx]
+                log.info(
+                    f"Subject {sid}: evaluating on MRCP motor subset only "
+                    f"({len(eval_ch_names)} channels)."
+                )
         n_classes = int(len(np.unique(y)))
         backbones_this = list(backbones)
         if n_classes > 2 and "csp" in backbones_this and not cfg.backbones.allow_csp_multiclass:
@@ -266,8 +320,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         cv_splits = list(cv.split(X, y))
 
         # Pipeline order: baseline and ICALabel first, then GEDAI.
+        mrcp_baseline_cache = None
         for pipeline in pipelines:
-            if pipeline in ("gedai", "pylossless") and (
+            if pipeline in ("gedai", "gedai_mrcp", "pylossless") and (
                 "baseline" in pipelines or "icalabel" in pipelines
             ):
                 gc.collect()
@@ -276,19 +331,123 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     f"  (lighter pipelines done for this subject; running {pipeline} next)"
                 )
 
-            X_proc = preprocess_subject_data(
-                X=X,
-                sfreq=subj_data.sfreq,
-                ch_names=subj_data.ch_names,
-                l_freq=cfg.bandpass.l_freq,
-                h_freq=cfg.bandpass.h_freq,
-                denoising=pipeline,
-                # GEDAI (PhysioNet): continuous EDF; PyLossless (Alljoined): optional manifest.
-                subject_id=sid if pipeline in ("gedai", "pylossless") else None,
-                dataset_name=cfg.dataset_label or "",
-                gedai_n_jobs=cfg.memory.n_jobs,
-                data_root=cfg.data_root,
+            is_mrcp_gedai = (
+                pipeline == "gedai_mrcp"
+                and cfg.dataset_label
+                and "eeg_emg_mrcp" in cfg.dataset_label.lower()
             )
+            if is_mrcp_gedai:
+                # Leakage-safe mode: fit C_mrcp on each fold's training trials only,
+                # then run GEDAI with that fold-specific reference covariance.
+                X_proc = None
+                X_eval = None
+                fold_X_eval = []
+                baseline_fold_X_eval = None
+                for fold_i, (train_idx, test_idx) in enumerate(cv_splits):
+                    X_fold = preprocess_subject_data(
+                        X=X,
+                        sfreq=subj_data.sfreq,
+                        ch_names=subj_data.ch_names,
+                        l_freq=cfg.bandpass.l_freq,
+                        h_freq=cfg.bandpass.h_freq,
+                        denoising=pipeline,
+                        subject_id=sid,
+                        dataset_name=cfg.dataset_label or "",
+                        gedai_n_jobs=cfg.memory.n_jobs,
+                        data_root=cfg.data_root,
+                        y=y,
+                        train_idx=(
+                            None
+                            if cfg.denoising.gedai_mrcp_refcov_all_trials
+                            else train_idx
+                        ),
+                        mrcp_refcov_prior=cfg.denoising.gedai_mrcp_prior,
+                        mrcp_refcov_cache=mrcp_baseline_cache,
+                        mrcp_gedai_noise_multiplier=cfg.denoising.gedai_mrcp_noise_multiplier,
+                        mrcp_gedai_retention_min=cfg.denoising.gedai_mrcp_retention_min,
+                        mrcp_refcov_tmin_s=cfg.denoising.gedai_mrcp_refcov_tmin_s,
+                        mrcp_refcov_rank_max=cfg.denoising.gedai_mrcp_refcov_rank_max,
+                        mrcp_refcov_motor_weight=cfg.denoising.gedai_mrcp_refcov_motor_weight,
+                        mrcp_refcov_move_mix=cfg.denoising.gedai_mrcp_refcov_move_mix,
+                        use_anti_laplacian=cfg.denoising.use_anti_laplacian,
+                        anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
+                    )
+                    X_fold_eval = (
+                        X_fold[:, eval_ch_idx, :] if eval_ch_idx is not None else X_fold
+                    )
+                    fold_X_eval.append((X_fold_eval[train_idx], X_fold_eval[test_idx]))
+                    if fold_i == 0:
+                        X_proc = X_fold
+                        X_eval = X_fold_eval
+                    del X_fold, X_fold_eval
+                if cfg.denoising.gedai_mrcp_adaptive_baseline_gate:
+                    if mrcp_baseline_cache is None:
+                        X_base = preprocess_subject_data(
+                            X=X,
+                            sfreq=subj_data.sfreq,
+                            ch_names=subj_data.ch_names,
+                            l_freq=cfg.bandpass.l_freq,
+                            h_freq=cfg.bandpass.h_freq,
+                            denoising="baseline",
+                            subject_id=sid,
+                            dataset_name=cfg.dataset_label or "",
+                            gedai_n_jobs=cfg.memory.n_jobs,
+                            data_root=cfg.data_root,
+                            use_anti_laplacian=cfg.denoising.use_anti_laplacian,
+                            anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
+                        )
+                    else:
+                        X_base = mrcp_baseline_cache
+                    X_base_eval = (
+                        X_base[:, eval_ch_idx, :] if eval_ch_idx is not None else X_base
+                    )
+                    baseline_fold_X_eval = [
+                        (X_base_eval[train_idx], X_base_eval[test_idx])
+                        for train_idx, test_idx in cv_splits
+                    ]
+            else:
+                X_proc = preprocess_subject_data(
+                    X=X,
+                    sfreq=subj_data.sfreq,
+                    ch_names=subj_data.ch_names,
+                    l_freq=cfg.bandpass.l_freq,
+                    h_freq=cfg.bandpass.h_freq,
+                    denoising=pipeline,
+                    # GEDAI (PhysioNet): continuous EDF; PyLossless (Alljoined): optional manifest.
+                    # MRCP baseline also needs subject_id so it can go through the same
+                    # continuous-raw path as GEDAI for a fair comparison.
+                    subject_id=(
+                        sid
+                        if (
+                            pipeline in ("gedai", "pylossless")
+                            or (
+                                pipeline == "baseline"
+                                and cfg.dataset_label
+                                and "eeg_emg_mrcp" in cfg.dataset_label.lower()
+                            )
+                        )
+                        else None
+                    ),
+                    dataset_name=cfg.dataset_label or "",
+                    gedai_n_jobs=cfg.memory.n_jobs,
+                    data_root=cfg.data_root,
+                    mrcp_refcov_prior=cfg.denoising.gedai_mrcp_prior,
+                    mrcp_gedai_noise_multiplier=cfg.denoising.gedai_mrcp_noise_multiplier,
+                    mrcp_gedai_retention_min=cfg.denoising.gedai_mrcp_retention_min,
+                    mrcp_refcov_tmin_s=cfg.denoising.gedai_mrcp_refcov_tmin_s,
+                    mrcp_refcov_rank_max=cfg.denoising.gedai_mrcp_refcov_rank_max,
+                    mrcp_refcov_motor_weight=cfg.denoising.gedai_mrcp_refcov_motor_weight,
+                    mrcp_refcov_move_mix=cfg.denoising.gedai_mrcp_refcov_move_mix,
+                    use_anti_laplacian=cfg.denoising.use_anti_laplacian,
+                    anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
+                )
+                X_eval = X_proc[:, eval_ch_idx, :] if eval_ch_idx is not None else X_proc
+                if (
+                    pipeline == "baseline"
+                    and cfg.dataset_label
+                    and "eeg_emg_mrcp" in cfg.dataset_label.lower()
+                ):
+                    mrcp_baseline_cache = X_proc.copy()
 
             if cfg.memory.save_denoised_npz:
                 ddir = results_root / cfg.memory.denoised_subdir
@@ -316,8 +475,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             beta_band = (13.0, 30.0)
             
             # Record power for this pipeline
-            curr_alpha = compute_band_power(X_proc, subj_data.sfreq, *alpha_band, ch_idx=ch_idx)
-            curr_beta = compute_band_power(X_proc, subj_data.sfreq, *beta_band, ch_idx=ch_idx)
+            signal_ref = X_proc if X_proc is not None else fold_X_eval[0][0]
+            curr_alpha = compute_band_power(signal_ref, subj_data.sfreq, *alpha_band, ch_idx=ch_idx)
+            curr_beta = compute_band_power(signal_ref, subj_data.sfreq, *beta_band, ch_idx=ch_idx)
             
             if pipeline == "baseline":
                 ref_alpha = curr_alpha if curr_alpha > 0 else 1.0
@@ -369,29 +529,151 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     )
 
             tangent_fold_features = None
+            time_lda_fold_features = None
             use_chance_binom = cfg.statistics.subject_chance_method == "binomial"
             n_classes = int(len(np.unique(y)))
 
             for backbone in backbones_this:
                 if backbone == "csp":
-                    res = run_csp_cv_preprocessed(X_proc=X_proc, y=y, cv_splits=cv_splits)
-                else:
+                    if is_mrcp_gedai:
+                        fold_acc = []
+                        pooled_c = 0
+                        pooled_t = 0
+                        for (train_idx, test_idx), (X_train_fold, X_test_fold) in zip(cv_splits, fold_X_eval):
+                            y_train = y[train_idx]
+                            y_test = y[test_idx]
+                            X_both = np.concatenate([X_train_fold, X_test_fold], axis=0)
+                            y_both = np.concatenate([y_train, y_test], axis=0)
+                            tr = np.arange(len(y_train))
+                            te = np.arange(len(y_train), len(y_train) + len(y_test))
+                            cres = run_csp_cv_preprocessed(
+                                X_proc=X_both, y=y_both, cv_splits=[(tr, te)]
+                            )
+                            fold_acc.extend(cres.fold_accuracies)
+                            pooled_c += int(cres.pooled_test_correct)
+                            pooled_t += int(cres.pooled_test_total)
+                            del cres, X_both, y_both
+                        res = None
+                    else:
+                        res = run_csp_cv_preprocessed(X_proc=X_eval, y=y, cv_splits=cv_splits)
+                        fold_acc = list(res.fold_accuracies)
+                        pooled_c = int(res.pooled_test_correct)
+                        pooled_t = int(res.pooled_test_total)
+                elif backbone == "tangent":
                     if tangent_fold_features is None:
-                        tangent_fold_features = build_tangent_features_for_splits(
-                            X_proc=X_proc,
-                            cv_splits=cv_splits,
-                        )
+                        if is_mrcp_gedai:
+                            tangent_fold_features = []
+                            for X_train_fold, X_test_fold in fold_X_eval:
+                                X_both = np.concatenate([X_train_fold, X_test_fold], axis=0)
+                                tr = np.arange(X_train_fold.shape[0])
+                                te = np.arange(X_train_fold.shape[0], X_both.shape[0])
+                                ff = build_tangent_features_for_splits(X_both, [(tr, te)])
+                                tangent_fold_features.append(ff[0])
+                                del ff, X_both
+                        else:
+                            tangent_fold_features = build_tangent_features_for_splits(
+                                X_proc=X_eval,
+                                cv_splits=cv_splits,
+                            )
                     res = run_tangent_cv_precomputed_features(
                         y=y,
                         cv_splits=cv_splits,
                         fold_features=tangent_fold_features,
                     )
+                    fold_acc = list(res.fold_accuracies)
+                    mean_acc = float(np.mean(fold_acc))
+                    std_acc = float(np.std(fold_acc, ddof=1))
+                    pooled_c = int(res.pooled_test_correct)
+                    pooled_t = int(res.pooled_test_total)
+                else:
+                    if time_lda_fold_features is None:
+                        if is_mrcp_gedai:
+                            active_fold_inputs = fold_X_eval
+                            if (
+                                cfg.denoising.gedai_mrcp_adaptive_baseline_gate
+                                and baseline_fold_X_eval is not None
+                            ):
+                                active_fold_inputs = []
+                                gate_margin = float(cfg.denoising.gedai_mrcp_gate_margin)
+                                inner_splits = int(cfg.denoising.gedai_mrcp_gate_inner_splits)
+                                for fold_i, (
+                                    (train_idx, _test_idx),
+                                    (Xg_train, Xg_test),
+                                    (Xb_train, Xb_test),
+                                ) in enumerate(
+                                    zip(cv_splits, fold_X_eval, baseline_fold_X_eval)
+                                ):
+                                    y_train = y[train_idx]
+                                    gate_rs = int(cfg.cv.random_state) + int(sid) * 1009 + fold_i
+                                    base_score = _score_time_lda_inner_cv(
+                                        X_proc=Xb_train,
+                                        y=y_train,
+                                        sfreq=subj_data.sfreq,
+                                        target_sfreq=getattr(
+                                            cfg.backbones, "time_lda_target_sfreq", None
+                                        ),
+                                        n_splits=inner_splits,
+                                        random_state=gate_rs,
+                                    )
+                                    gedai_score = _score_time_lda_inner_cv(
+                                        X_proc=Xg_train,
+                                        y=y_train,
+                                        sfreq=subj_data.sfreq,
+                                        target_sfreq=getattr(
+                                            cfg.backbones, "time_lda_target_sfreq", None
+                                        ),
+                                        n_splits=inner_splits,
+                                        random_state=gate_rs,
+                                    )
+                                    use_gedai_fold = gedai_score >= (base_score + gate_margin)
+                                    active_fold_inputs.append(
+                                        (Xg_train, Xg_test) if use_gedai_fold else (Xb_train, Xb_test)
+                                    )
+                                    log.info(
+                                        "  Subject %s | time_lda | gedai_mrcp gate | fold=%d "
+                                        "baseline_train_cv=%.3f gedai_train_cv=%.3f margin=%.3f "
+                                        "choice=%s",
+                                        sid,
+                                        fold_i,
+                                        base_score,
+                                        gedai_score,
+                                        gate_margin,
+                                        "gedai_mrcp" if use_gedai_fold else "baseline",
+                                    )
+                            time_lda_fold_features = []
+                            for X_train_fold, X_test_fold in active_fold_inputs:
+                                X_both = np.concatenate([X_train_fold, X_test_fold], axis=0)
+                                tr = np.arange(X_train_fold.shape[0])
+                                te = np.arange(X_train_fold.shape[0], X_both.shape[0])
+                                ff = build_time_lda_features_for_splits(
+                                    X_both,
+                                    [(tr, te)],
+                                    sfreq=subj_data.sfreq,
+                                    target_sfreq=getattr(cfg.backbones, "time_lda_target_sfreq", None),
+                                )
+                                time_lda_fold_features.append(ff[0])
+                                del ff, X_both
+                        else:
+                            time_lda_fold_features = build_time_lda_features_for_splits(
+                                X_proc=X_eval,
+                                cv_splits=cv_splits,
+                                sfreq=subj_data.sfreq,
+                                target_sfreq=getattr(cfg.backbones, "time_lda_target_sfreq", None),
+                            )
+                    res = run_time_lda_cv_precomputed_features(
+                        y=y,
+                        cv_splits=cv_splits,
+                        fold_features=time_lda_fold_features,
+                    )
+                    fold_acc = list(res.fold_accuracies)
+                    mean_acc = float(np.mean(fold_acc))
+                    std_acc = float(np.std(fold_acc, ddof=1))
+                    pooled_c = int(res.pooled_test_correct)
+                    pooled_t = int(res.pooled_test_total)
 
-                fold_acc = list(res.fold_accuracies)
-                mean_acc = float(np.mean(fold_acc))
-                std_acc = float(np.std(fold_acc, ddof=1))
-                pooled_c = int(res.pooled_test_correct)
-                pooled_t = int(res.pooled_test_total)
+                if backbone == "csp":
+                    mean_acc = float(np.mean(fold_acc))
+                    std_acc = float(np.std(fold_acc, ddof=1))
 
                 if use_chance_binom:
                     p_emp = binomial_vs_chance_p_value(pooled_c, pooled_t, n_classes)
@@ -408,16 +690,45 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     ):
                         y_shuffled = np.random.permutation(y)
                         if backbone == "csp":
-                            nres = run_csp_cv_preprocessed(
-                                X_proc=X_proc,
-                                y=y_shuffled,
-                                cv_splits=cv_splits,
-                            )
-                        else:
+                            if is_mrcp_gedai:
+                                n_fold = []
+                                n_pc = 0
+                                n_pt = 0
+                                for (train_idx, test_idx), (X_train_fold, X_test_fold) in zip(cv_splits, fold_X_eval):
+                                    y_train = y_shuffled[train_idx]
+                                    y_test = y_shuffled[test_idx]
+                                    X_both = np.concatenate([X_train_fold, X_test_fold], axis=0)
+                                    y_both = np.concatenate([y_train, y_test], axis=0)
+                                    tr = np.arange(len(y_train))
+                                    te = np.arange(len(y_train), len(y_train) + len(y_test))
+                                    cres = run_csp_cv_preprocessed(X_proc=X_both, y=y_both, cv_splits=[(tr, te)])
+                                    n_fold.extend(cres.fold_accuracies)
+                                    n_pc += int(cres.pooled_test_correct)
+                                    n_pt += int(cres.pooled_test_total)
+                                    del cres, X_both, y_both
+                                class _Tmp:
+                                    pass
+                                nres = _Tmp()
+                                nres.fold_accuracies = n_fold
+                                nres.pooled_test_correct = n_pc
+                                nres.pooled_test_total = n_pt
+                            else:
+                                nres = run_csp_cv_preprocessed(
+                                    X_proc=X_eval,
+                                    y=y_shuffled,
+                                    cv_splits=cv_splits,
+                                )
+                        elif backbone == "tangent":
                             nres = run_tangent_cv_precomputed_features(
                                 y=y_shuffled,
                                 cv_splits=cv_splits,
                                 fold_features=tangent_fold_features,
+                            )
+                        else:
+                            nres = run_time_lda_cv_precomputed_features(
+                                y=y_shuffled,
+                                cv_splits=cv_splits,
+                                fold_features=time_lda_fold_features,
                             )
                         null_acc.append(float(np.mean(nres.fold_accuracies)))
                         del nres
@@ -442,16 +753,45 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         ):
                             y_shuffled = np.random.permutation(y)
                             if backbone == "csp":
-                                nres = run_csp_cv_preprocessed(
-                                    X_proc=X_proc,
-                                    y=y_shuffled,
-                                    cv_splits=cv_splits,
-                                )
-                            else:
+                                if is_mrcp_gedai:
+                                    n_fold = []
+                                    n_pc = 0
+                                    n_pt = 0
+                                    for (train_idx, test_idx), (X_train_fold, X_test_fold) in zip(cv_splits, fold_X_eval):
+                                        y_train = y_shuffled[train_idx]
+                                        y_test = y_shuffled[test_idx]
+                                        X_both = np.concatenate([X_train_fold, X_test_fold], axis=0)
+                                        y_both = np.concatenate([y_train, y_test], axis=0)
+                                        tr = np.arange(len(y_train))
+                                        te = np.arange(len(y_train), len(y_train) + len(y_test))
+                                        cres = run_csp_cv_preprocessed(X_proc=X_both, y=y_both, cv_splits=[(tr, te)])
+                                        n_fold.extend(cres.fold_accuracies)
+                                        n_pc += int(cres.pooled_test_correct)
+                                        n_pt += int(cres.pooled_test_total)
+                                        del cres, X_both, y_both
+                                    class _Tmp:
+                                        pass
+                                    nres = _Tmp()
+                                    nres.fold_accuracies = n_fold
+                                    nres.pooled_test_correct = n_pc
+                                    nres.pooled_test_total = n_pt
+                                else:
+                                    nres = run_csp_cv_preprocessed(
+                                        X_proc=X_eval,
+                                        y=y_shuffled,
+                                        cv_splits=cv_splits,
+                                    )
+                            elif backbone == "tangent":
                                 nres = run_tangent_cv_precomputed_features(
                                     y=y_shuffled,
                                     cv_splits=cv_splits,
                                     fold_features=tangent_fold_features,
+                                )
+                            else:
+                                nres = run_time_lda_cv_precomputed_features(
+                                    y=y_shuffled,
+                                    cv_splits=cv_splits,
+                                    fold_features=time_lda_fold_features,
                                 )
                             null_acc.append(float(np.mean(nres.fold_accuracies)))
                             del nres
@@ -482,27 +822,44 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
 
                 # Save trained model after each run (full-data fit) for reuse / deployment
                 if cfg.memory.save_models:
+                    if is_mrcp_gedai:
+                        log.warning(
+                            f"Skipping model export for subject {sid} {backbone} {pipeline} "
+                            "because fold-specific GEDAI preprocessing has no single full-data model."
+                        )
+                        continue
                     model = None
                     try:
                         if backbone == "csp":
                             model = fit_csp_model_preprocessed(
-                                X_proc=X_proc,
+                                X_proc=X_eval if X_eval is not None else np.concatenate([a for a, _ in fold_X_eval], axis=0),
                                 y=y,
                                 sfreq=subj_data.sfreq,
-                                ch_names=subj_data.ch_names,
+                                ch_names=eval_ch_names,
+                                l_freq=cfg.bandpass.l_freq,
+                                h_freq=cfg.bandpass.h_freq,
+                                denoising=pipeline,
+                            )
+                        elif backbone == "tangent":
+                            model = fit_tangent_model_preprocessed(
+                                X_proc=X_eval if X_eval is not None else np.concatenate([a for a, _ in fold_X_eval], axis=0),
+                                y=y,
+                                sfreq=subj_data.sfreq,
+                                ch_names=eval_ch_names,
                                 l_freq=cfg.bandpass.l_freq,
                                 h_freq=cfg.bandpass.h_freq,
                                 denoising=pipeline,
                             )
                         else:
-                            model = fit_tangent_model_preprocessed(
-                                X_proc=X_proc,
+                            model = fit_time_lda_model_preprocessed(
+                                X_proc=X_eval if X_eval is not None else np.concatenate([a for a, _ in fold_X_eval], axis=0),
                                 y=y,
                                 sfreq=subj_data.sfreq,
-                                ch_names=subj_data.ch_names,
+                                ch_names=eval_ch_names,
                                 l_freq=cfg.bandpass.l_freq,
                                 h_freq=cfg.bandpass.h_freq,
                                 denoising=pipeline,
+                                target_sfreq=getattr(cfg.backbones, "time_lda_target_sfreq", None),
                             )
                         path = models_dir / f"subject_{sid}_{backbone}_{pipeline}.joblib"
                         joblib.dump(model, path)
@@ -516,7 +873,11 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         del model
 
             del tangent_fold_features
-            del X_proc
+            del time_lda_fold_features
+            if X_proc is not None:
+                del X_proc
+            if is_mrcp_gedai:
+                del fold_X_eval
             gc.collect()
 
         # Explicit cleanup: no raw data or large objects persist beyond this subject
@@ -558,6 +919,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
     for backbone in backbones:
         for (p1, p2) in [
             ("gedai", "baseline"),
+            ("gedai_mrcp", "baseline"),
+            ("gedai_mrcp", "gedai"),
             ("icalabel", "baseline"),
             ("gedai", "icalabel"),
             ("pylossless", "baseline"),
