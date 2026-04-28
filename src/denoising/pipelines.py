@@ -2233,8 +2233,7 @@ def preprocess_subject_data(
                 RuntimeWarning,
             )
             # Fall back to baseline (bandpass only) so the pipeline completes
-            from .filters import bandpass_filter as _bp
-            return _bp(
+            return bandpass_filter(
                 np.asarray(X, dtype=np.float32).copy(), sfreq, l_freq, h_freq
             ).astype(np.float32, copy=False)
 
