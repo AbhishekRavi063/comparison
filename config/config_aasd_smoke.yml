@@ -1,9 +1,9 @@
-# AASD smoke test — 2 subjects, fast CV, baseline + ASR + GEDAI only (no ICALabel)
+# AASD smoke test — 2 subjects, fast CV, baseline + ASR + ICA + GEDAI
 data_root: ./data/aasd/npz
 results_root: ./results/aasd_smoke
 dataset_label: aasd
 
-subjects: [1, 2]
+subjects: [1]
 
 # Cap at 300 trials to stay within memory on M4 Pro 15GB (full 3600 OOM-kills ASR/GEDAI)
 max_trials: 300
@@ -40,7 +40,7 @@ backbones:
 
 denoising:
   use_baseline: true
-  use_icalabel: false
+  use_icalabel: true
   use_asr: true
   use_gedai: true
 
