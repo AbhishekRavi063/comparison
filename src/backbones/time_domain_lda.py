@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.metrics import roc_auc_score
 
 
 @dataclass
@@ -12,6 +13,7 @@ class TimeLdaResult:
     fold_accuracies: List[float]
     pooled_test_correct: int = 0
     pooled_test_total: int = 0
+    fold_aucs: List[float] = field(default_factory=list)
 
 
 def _downsample_trials(
@@ -51,6 +53,7 @@ def run_time_lda_cv_precomputed_features(
     """Run shrinkage LDA on precomputed ERP-style flattened features."""
     y = np.asarray(y)
     fold_accuracies: List[float] = []
+    fold_aucs: List[float] = []
     pooled_correct = 0
     pooled_total = 0
     for (train_idx, test_idx), (X_train_feat, X_test_feat) in zip(cv_splits, fold_features):
@@ -62,10 +65,16 @@ def run_time_lda_cv_precomputed_features(
         pooled_correct += int(np.sum(pred == y_test))
         pooled_total += int(len(y_test))
         fold_accuracies.append(float(np.mean(pred == y_test)))
+        try:
+            scores = clf.decision_function(X_test_feat)
+            fold_aucs.append(float(roc_auc_score(y_test, scores)))
+        except Exception:
+            fold_aucs.append(0.5)
     return TimeLdaResult(
         fold_accuracies=fold_accuracies,
         pooled_test_correct=pooled_correct,
         pooled_test_total=pooled_total,
+        fold_aucs=fold_aucs,
     )
 
 

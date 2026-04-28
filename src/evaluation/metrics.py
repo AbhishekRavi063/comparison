@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
@@ -22,6 +22,13 @@ class SubjectPerformance:
     pooled_test_correct: int | None = None
     pooled_test_total: int | None = None
     p_vs_chance_method: str = "permutation"
+    mean_auc: float = 0.0
+    fold_aucs: List[float] = field(default_factory=list)
+    # Alpha lateralization index — proof of signal preservation.
+    # LI > 0: ipsilateral alpha > contralateral alpha (expected auditory attention pattern).
+    # LI closer to 0 after GEDAI vs baseline would indicate signal destruction.
+    # LI higher after GEDAI indicates GEDAI sharpened the neural lateralization.
+    lateralization_index: float = 0.0
 
 
 def empirical_chance_p_value(

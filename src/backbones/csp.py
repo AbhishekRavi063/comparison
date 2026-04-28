@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Sequence, Tuple
 
 import numpy as np
 from scipy.linalg import eigh
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 
 from ..denoising.pipelines import (
@@ -23,6 +24,7 @@ class CSPResult:
     # Pooled test predictions across CV folds (for binomial vs-chance with large N).
     pooled_test_correct: int = 0
     pooled_test_total: int = 0
+    fold_aucs: List[float] = field(default_factory=list)
 
 
 def _compute_csp_filters(
@@ -148,6 +150,7 @@ def run_csp_cv_preprocessed(
     X_proc = np.asarray(X_proc, dtype=np.float32)
     y = np.asarray(y)
     fold_accuracies: List[float] = []
+    fold_aucs: List[float] = []
 
     pooled_correct = 0
     pooled_total = 0
@@ -167,11 +170,17 @@ def run_csp_cv_preprocessed(
         pooled_correct += int(np.sum(pred == y_test))
         pooled_total += int(len(y_test))
         fold_accuracies.append(float(np.mean(pred == y_test)))
+        try:
+            scores = clf.decision_function(X_test_feat)
+            fold_aucs.append(float(roc_auc_score(y_test, scores)))
+        except Exception:
+            fold_aucs.append(0.5)
 
     return CSPResult(
         fold_accuracies=fold_accuracies,
         pooled_test_correct=pooled_correct,
         pooled_test_total=pooled_total,
+        fold_aucs=fold_aucs,
     )
 
 

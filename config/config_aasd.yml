@@ -1,0 +1,48 @@
+# AASD — Auditory Attention Switching Dataset (Nature Sci Data 2026)
+# 18 subjects, 64 channels, 60 trials × 60s → windowed to 1s epochs (3600 per subject)
+# Professor spec: alpha (8-12 Hz), 1s window, left vs right, all trials, AUC primary
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_full
+dataset_label: aasd
+
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 12.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 4          # professor's desktop: 4 cores
+  save_models: false
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+  use_time_lda: false
+
+denoising:
+  use_baseline: true
+  use_icalabel: true
+  use_asr: true
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["P3", "Pz", "P4", "O1", "Oz", "O2"]
+  segment_duration_s: 1.0

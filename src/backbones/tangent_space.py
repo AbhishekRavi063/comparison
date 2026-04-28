@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Sequence, Tuple
 
 import numpy as np
 from scipy.linalg import logm
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 
 from ..denoising.pipelines import (
@@ -22,6 +23,7 @@ class TangentSpaceResult:
     fold_accuracies: List[float]
     pooled_test_correct: int = 0
     pooled_test_total: int = 0
+    fold_aucs: List[float] = field(default_factory=list)
 
 
 def _covariance_matrices(X: np.ndarray) -> np.ndarray:
@@ -206,6 +208,7 @@ def run_tangent_cv_precomputed_features(
     """Run logistic-regression CV using precomputed tangent features."""
     y = np.asarray(y)
     fold_accuracies: List[float] = []
+    fold_aucs: List[float] = []
     pooled_correct = 0
     pooled_total = 0
 
@@ -218,11 +221,17 @@ def run_tangent_cv_precomputed_features(
         pooled_correct += int(np.sum(pred == y_test))
         pooled_total += int(len(y_test))
         fold_accuracies.append(float(np.mean(pred == y_test)))
+        try:
+            proba = clf.predict_proba(X_test_feat)[:, 1]
+            fold_aucs.append(float(roc_auc_score(y_test, proba)))
+        except Exception:
+            fold_aucs.append(0.5)
 
     return TangentSpaceResult(
         fold_accuracies=fold_accuracies,
         pooled_test_correct=pooled_correct,
         pooled_test_total=pooled_total,
+        fold_aucs=fold_aucs,
     )
 
 

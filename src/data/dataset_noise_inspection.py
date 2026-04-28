@@ -244,43 +244,52 @@ def plot_denoising_comparison_overlay(
     trial_idx: int = 0,
 ) -> None:
     """Compare Time-Domain signal 'In' vs 'Out' using official GEDAI style.
-    
-    Aesthetic:
-    - MNE-style stacking: single axis with vertical offsets.
-    - Colors: Red for 'In' (noisy baseline), Blue for 'Out' (denoised).
+
+    Each channel is normalised independently so both In and Out are always
+    visible regardless of relative amplitude (important when GEDAI removes
+    large amounts of power — the cleaned signal would otherwise appear flat).
     """
-    X_in = np.asarray(X_in, dtype=np.float64)
+    X_in  = np.asarray(X_in,  dtype=np.float64)
     X_out = np.asarray(X_out, dtype=np.float64)
     n_ch_plot = min(n_channels, X_in.shape[1])
     t = np.arange(X_in.shape[-1]) / sfreq
-    
+
     fig, ax = plt.subplots(figsize=(14, 0.8 * n_ch_plot + 2))
-    
-    # Calculate spacing (MNE-style)
-    # peak-to-peak of the noisy signal as reference
-    spacing = np.max(np.ptp(X_in[trial_idx, :n_ch_plot, :], axis=1)) * 1.1
-    if spacing == 0: spacing = 1.0
-    offsets = np.arange(n_ch_plot)[::-1] * spacing
-    
+
+    # Use a fixed display unit of 1.0 per channel; normalise each channel
+    # to its own peak-to-peak so signals of any amplitude fill the lane.
+    LANE = 1.0
+    offsets = np.arange(n_ch_plot)[::-1] * LANE * 2.2
+
     for i in range(n_ch_plot):
-        ch = ch_names[i] if i < len(ch_names) else f"Ch{i}"
-        
-        # In (Noisy) -> Red
-        ax.plot(t, X_in[trial_idx, i, :] + offsets[i], color="red", alpha=0.6, lw=0.7, 
-                label="Noisy (In)" if i == 0 else None)
-        
-        # Out (Cleaned) -> Blue
-        ax.plot(t, X_out[trial_idx, i, :] + offsets[i], color="blue", alpha=0.8, lw=0.9, 
-                label=f"Cleaned (Out - {pipeline_name})" if i == 0 else None)
-        
+        sig_in  = X_in [trial_idx, i, :]
+        sig_out = X_out[trial_idx, i, :]
+
+        # Normalise BOTH signals using the baseline (In) scale so that the
+        # cleaned signal appears proportionally smaller when noise is removed.
+        # This correctly shows: large noisy raw → smaller clean GEDAI output.
+        ptp_ref = np.ptp(sig_in)
+        if ptp_ref < 1e-12:
+            ptp_ref = 1.0
+        norm_in  = (sig_in  - sig_in.mean())  / ptp_ref * LANE
+        norm_out = (sig_out - sig_out.mean()) / ptp_ref * LANE
+
+        ax.plot(t, norm_in  + offsets[i], color="red",  alpha=0.55, lw=0.8,
+                label="Baseline (In)"                   if i == 0 else None)
+        ax.plot(t, norm_out + offsets[i], color="blue", alpha=0.85, lw=1.0,
+                label=f"Cleaned (Out — {pipeline_name})" if i == 0 else None)
+
     ax.set_yticks(offsets)
     ax.set_yticklabels(ch_names[:n_ch_plot], fontsize=9)
     ax.set_xlabel("Time (s)")
-    ax.set_title(f"EEG Comparison (MNE-Style) | Sub {subject_id} | Trial {trial_idx} | {pipeline_name}")
+    ax.set_title(
+        f"EEG overlay | Sub {subject_id} | {pipeline_name}\n"
+        "Both signals on baseline scale — smaller blue = noise removed by denoising"
+    )
     ax.legend(loc="upper right", fontsize=9)
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_xlim(t[0], t[-1])
-    
+
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=100)
@@ -295,30 +304,75 @@ def plot_denoising_psd_comparison(
     subject_id: int,
     pipeline_name: str,
 ) -> None:
-    """Compare trial-averaged PSD 'In' vs 'Out' (averaged across all channels)."""
+    """Compare trial-averaged PSD 'In' vs 'Out'.
+
+    Two panels:
+      Left  — absolute PSD (dB) showing how much power was removed.
+      Right — normalised PSD (each curve divided by its own max) showing
+              that the alpha peak SHAPE is preserved after denoising.
+    """
+    from scipy.signal import welch as _welch
+
     nperseg = min(256, X_in.shape[-1])
-    f, p_in = welch(X_in, fs=sfreq, nperseg=nperseg, axis=-1)
-    _, p_out = welch(X_out, fs=sfreq, nperseg=nperseg, axis=-1)
-    
-    # Average over trials and channels
-    p_in_mean = 10 * np.log10(np.maximum(p_in.mean(axis=(0, 1)), 1e-30))
-    p_out_mean = 10 * np.log10(np.maximum(p_out.mean(axis=(0, 1)), 1e-30))
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(f, p_in_mean, color="gray", lw=1.5, label="In (Bandpass)")
-    ax.plot(f, p_out_mean, color="blue", lw=2.0, label=f"Out ({pipeline_name})")
-    
-    ax.axvspan(8, 12, alpha=0.1, color="green", label="Alpha Band")
-    ax.axvspan(13, 30, alpha=0.1, color="orange", label="Beta Band")
-    
+    f, p_in  = _welch(X_in,  fs=sfreq, nperseg=nperseg, axis=-1)
+    _,  p_out = _welch(X_out, fs=sfreq, nperseg=nperseg, axis=-1)
+
+    # Average over trials and channels → 1-D PSD
+    pi = p_in .mean(axis=(0, 1))
+    po = p_out.mean(axis=(0, 1))
+    pi_db = 10 * np.log10(np.maximum(pi, 1e-30))
+    po_db = 10 * np.log10(np.maximum(po, 1e-30))
+
+    # Normalised (shape comparison)
+    pi_norm = pi / np.maximum(pi.max(), 1e-30)
+    po_norm = po / np.maximum(po.max(), 1e-30)
+
+    # Alpha power ratio annotation
+    alpha_mask = (f >= 8) & (f <= 12)
+    try:
+        ratio = float(np.trapezoid(po[alpha_mask], f[alpha_mask]) /
+                      np.maximum(np.trapezoid(pi[alpha_mask], f[alpha_mask]), 1e-30))
+    except AttributeError:
+        ratio = float(np.trapz(po[alpha_mask], f[alpha_mask]) /
+                      np.maximum(np.trapz(pi[alpha_mask], f[alpha_mask]), 1e-30))
+
+    fmax = min(50.0, sfreq / 2)
+    fmask = f <= fmax
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    # --- Left: absolute PSD ---
+    ax = axes[0]
+    ax.plot(f[fmask], pi_db[fmask], color="gray", lw=1.5, label="Baseline (In)")
+    ax.plot(f[fmask], po_db[fmask], color="blue", lw=2.0, label=f"{pipeline_name} (Out)")
+    ax.axvspan(8, 12, alpha=0.12, color="green",  label="Alpha (8–12 Hz)")
+    ax.axvspan(13, 30, alpha=0.08, color="orange", label="Beta (13–30 Hz)")
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Power (dB)")
-    ax.set_title(f"PSD Comparison: Bandpass vs {pipeline_name} | Subject {subject_id}")
-    ax.legend()
-    ax.set_xlim(0, min(100, sfreq/2))
-    ax.grid(True, which="both", alpha=0.3)
-    
+    ax.set_title(f"Absolute PSD — Sub {subject_id} | {pipeline_name}\n"
+                 f"Alpha power ratio: {ratio:.3f} ({ratio*100:.1f}% retained)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # --- Right: normalised (shape check) ---
+    ax = axes[1]
+    ax.plot(f[fmask], pi_norm[fmask], color="gray", lw=1.5, label="Baseline (normalised)")
+    ax.plot(f[fmask], po_norm[fmask], color="blue", lw=2.0, label=f"{pipeline_name} (normalised)")
+    ax.axvspan(8, 12, alpha=0.12, color="green")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Normalised power")
+    ax.set_title("Spectral SHAPE comparison\n"
+                 "(overlapping curves = alpha peak preserved, only amplitude reduced)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    fig.suptitle(
+        f"PSD: Baseline vs {pipeline_name} | Subject {subject_id}",
+        fontsize=12, fontweight="bold",
+    )
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=100)
+    fig.savefig(out_path, dpi=120)
     plt.close(fig)

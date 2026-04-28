@@ -1,0 +1,49 @@
+# AASD smoke test — 2 subjects, fast CV, baseline + ASR + GEDAI only (no ICALabel)
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_smoke
+dataset_label: aasd
+
+subjects: [1, 2]
+
+# Cap at 300 trials to stay within memory on M4 Pro 15GB (full 3600 OOM-kills ASR/GEDAI)
+max_trials: 300
+
+sampling_rate: 250
+
+bandpass:
+  l_freq: 8.0
+  h_freq: 12.0
+
+cv:
+  n_splits: 3
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+  use_time_lda: false
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: true
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["P3", "Pz", "P4", "O1", "Oz", "O2"]
+  segment_duration_s: 1.0

@@ -39,6 +39,33 @@ def _apply_max_trials_smoke(
     rs = int(cfg.cv.random_state) + int(subject_id) * 1_000_003
     rng = np.random.RandomState(rs)
 
+    # AASD-specific smoke sampling:
+    # keep full 1s-window blocks per original 60s trial (60 windows/trial) so
+    # denoisers like GEDAI still see contiguous trial dynamics.
+    if cfg.dataset_label and "aasd" in str(cfg.dataset_label).lower() and n >= 120 and n % 60 == 0:
+        n_trials = n // 60
+        y_trials = y.reshape(n_trials, 60)[:, 0]
+        u, c = np.unique(y_trials, return_counts=True)
+        if len(u) == 2:
+            # Keep equal trials/class, respecting max_trials budget in windows.
+            max_trials_even = max(120, int(max_trials // 120) * 120)
+            trials_budget = max_trials_even // 60
+            per_cls = max(n_splits, min(trials_budget // 2, int(np.min(c))))
+            if per_cls * 2 <= n_trials:
+                idx_blocks = []
+                for cls in sorted(u.tolist()):
+                    t_idx = np.flatnonzero(y_trials == cls)
+                    rng.shuffle(t_idx)
+                    for t in t_idx[:per_cls]:
+                        idx_blocks.append(np.arange(t * 60, (t + 1) * 60))
+                idx = np.concatenate(idx_blocks)
+                idx.sort()
+                log.info(
+                    f"Subject {subject_id}: AASD trial-aware smoke subset "
+                    f"({2*per_cls} trials, {len(idx)} windows, max_trials={max_trials})."
+                )
+                return X[idx].copy(), y[idx].copy()
+
     if len(np.unique(y)) > 2:
         strategy = str(getattr(cfg, "max_trials_strategy", "binary_for_multiclass"))
         uni, counts = np.unique(y, return_counts=True)
@@ -117,6 +144,45 @@ def _apply_max_trials_smoke(
     if n <= max_trials:
         return X, y
 
+    # AASD trial-aware subsampling: the GEDAI path reconstructs 60s trials from
+    # consecutive 1s windows.  Randomly picking individual windows breaks that
+    # assumption (groups of 60 random windows ≠ one coherent trial).
+    # For AASD we subsample whole 60-window trial blocks so every reconstructed
+    # trial is temporally contiguous.
+    if cfg.dataset_label and "aasd" in str(cfg.dataset_label).lower():
+        WIN_PER_TRIAL_AASD = 60  # 60 s × 250 Hz / 250 samples
+        n_full_trials = n // WIN_PER_TRIAL_AASD
+        if n_full_trials >= 2 * n_splits:
+            # Build per-trial labels (majority vote).
+            y_trials = np.array(
+                [
+                    int(np.bincount(y[t * WIN_PER_TRIAL_AASD:(t + 1) * WIN_PER_TRIAL_AASD].astype(int)).argmax())
+                    for t in range(n_full_trials)
+                ],
+                dtype=np.int64,
+            )
+            # Stratified trial subsample.
+            n_trial_cap = max(2 * n_splits, max_trials // WIN_PER_TRIAL_AASD)
+            n_trial_cap = min(n_trial_cap, n_full_trials)
+            rng2 = np.random.RandomState(rs + 7)
+            cls_vals = np.unique(y_trials)
+            per_cls = max(n_splits, n_trial_cap // max(len(cls_vals), 1))
+            chosen = []
+            for cv in cls_vals:
+                idx_c = np.where(y_trials == cv)[0]
+                rng2.shuffle(idx_c)
+                chosen.append(idx_c[:per_cls])
+            trial_idx = np.sort(np.concatenate(chosen))
+            # Expand back to window indices (keep temporal order).
+            win_idx = np.concatenate(
+                [np.arange(t * WIN_PER_TRIAL_AASD, (t + 1) * WIN_PER_TRIAL_AASD) for t in trial_idx]
+            )
+            log.info(
+                f"Subject {subject_id}: AASD smoke — {len(trial_idx)} complete trials "
+                f"({len(win_idx)} windows) selected (max_trials={max_trials})."
+            )
+            return X[win_idx].copy(), y[win_idx].copy()
+
     train_size = min(max_trials, n)
     try:
         sss = StratifiedShuffleSplit(
@@ -176,6 +242,39 @@ from .metrics import (
     wilcoxon_paired_pipeline_p_value,
     compute_band_power,
 )
+
+# Parietal channels used for alpha lateralization index.
+_LEFT_PARIETAL  = ("P3", "P7", "CP5", "P5")
+_RIGHT_PARIETAL = ("P4", "P8", "CP6", "P6")
+
+
+def _compute_lateralization_index(
+    X_proc: np.ndarray,
+    y: np.ndarray,
+    ch_names: Sequence,
+) -> float:
+    """Alpha lateralization index (LI) from already bandpass-filtered data.
+
+    LI = mean[(alpha_ipsi - alpha_contra) / (alpha_ipsi + alpha_contra)]
+    For auditory attention: y=0 (left attend) → ipsi=right, contra=left.
+    LI > 0 confirms expected neural pattern. Higher LI after GEDAI = sharpened signal.
+    """
+    ch_upper = [str(c).upper() for c in ch_names]
+    left_idx  = [ch_upper.index(c) for c in _LEFT_PARIETAL  if c in ch_upper]
+    right_idx = [ch_upper.index(c) for c in _RIGHT_PARIETAL if c in ch_upper]
+    if not left_idx or not right_idx:
+        return 0.0
+    power   = np.var(X_proc, axis=-1)
+    left_p  = power[:, left_idx].mean(axis=1)
+    right_p = power[:, right_idx].mean(axis=1)
+    y = np.asarray(y).ravel()
+    li_vals = []
+    for yi, lp, rp in zip(y, left_p, right_p):
+        ipsi, contra = (rp, lp) if int(yi) == 0 else (lp, rp)
+        denom = ipsi + contra
+        if denom > 1e-12:
+            li_vals.append(float((ipsi - contra) / denom))
+    return float(np.mean(li_vals)) if li_vals else 0.0
 
 
 def _is_borderline_p_value(p_value: float, cfg: ExperimentConfig) -> bool:
@@ -410,6 +509,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     X=X,
                     sfreq=subj_data.sfreq,
                     ch_names=subj_data.ch_names,
+                    y=y,
                     l_freq=cfg.bandpass.l_freq,
                     h_freq=cfg.bandpass.h_freq,
                     denoising=pipeline,
@@ -485,9 +585,20 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 alpha_ratio = 1.0
                 beta_ratio = 1.0
             else:
-                # ref_alpha/ref_beta must have been set by the 'baseline' pass
                 alpha_ratio = curr_alpha / ref_alpha
                 beta_ratio = curr_beta / ref_beta
+
+            # --- Alpha Lateralization Index ---
+            li = 0.0
+            if (
+                cfg.dataset_label
+                and "aasd" in str(cfg.dataset_label).lower()
+                and X_proc is not None
+            ):
+                try:
+                    li = _compute_lateralization_index(X_proc, y, subj_data.ch_names)
+                except Exception:
+                    li = 0.0
 
             # --- Automated Plots (Subject 1 only or if configured) ---
             if sid == cfg.subjects[0]:
@@ -534,6 +645,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             n_classes = int(len(np.unique(y)))
 
             for backbone in backbones_this:
+                fold_auc_vals: List[float] = []
                 if backbone == "csp":
                     if is_mrcp_gedai:
                         fold_acc = []
@@ -550,6 +662,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 X_proc=X_both, y=y_both, cv_splits=[(tr, te)]
                             )
                             fold_acc.extend(cres.fold_accuracies)
+                            fold_auc_vals.extend(getattr(cres, "fold_aucs", []))
                             pooled_c += int(cres.pooled_test_correct)
                             pooled_t += int(cres.pooled_test_total)
                             del cres, X_both, y_both
@@ -557,6 +670,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     else:
                         res = run_csp_cv_preprocessed(X_proc=X_eval, y=y, cv_splits=cv_splits)
                         fold_acc = list(res.fold_accuracies)
+                        fold_auc_vals = list(getattr(res, "fold_aucs", []))
                         pooled_c = int(res.pooled_test_correct)
                         pooled_t = int(res.pooled_test_total)
                 elif backbone == "tangent":
@@ -581,6 +695,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         fold_features=tangent_fold_features,
                     )
                     fold_acc = list(res.fold_accuracies)
+                    fold_auc_vals = list(getattr(res, "fold_aucs", []))
                     mean_acc = float(np.mean(fold_acc))
                     std_acc = float(np.std(fold_acc, ddof=1))
                     pooled_c = int(res.pooled_test_correct)
@@ -666,6 +781,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         fold_features=time_lda_fold_features,
                     )
                     fold_acc = list(res.fold_accuracies)
+                    fold_auc_vals = list(getattr(res, "fold_aucs", []))
                     mean_acc = float(np.mean(fold_acc))
                     std_acc = float(np.std(fold_acc, ddof=1))
                     pooled_c = int(res.pooled_test_correct)
@@ -814,6 +930,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         pooled_test_correct=pooled_c if use_chance_binom else None,
                         pooled_test_total=pooled_t if use_chance_binom else None,
                         p_vs_chance_method=p_method,
+                        mean_auc=float(np.mean(fold_auc_vals)) if fold_auc_vals else 0.0,
+                        fold_aucs=list(fold_auc_vals),
+                        lateralization_index=li,
                     )
                 )
                 log.info(
@@ -876,6 +995,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             del time_lda_fold_features
             if X_proc is not None:
                 del X_proc
+            # X_eval = X_proc for non-MRCP paths; drop the binding so the
+            # array is freed before the next pipeline iteration starts.
+            X_eval = None
             if is_mrcp_gedai:
                 del fold_X_eval
             gc.collect()
@@ -897,7 +1019,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     "pipeline": sp.pipeline,
                     "fold": fold_idx,
                     "accuracy": acc,
+                    "auc": sp.fold_aucs[fold_idx] if fold_idx < len(sp.fold_aucs) else None,
                     "mean_accuracy": sp.mean_accuracy,
+                    "mean_auc": sp.mean_auc,
                     "std_accuracy": sp.std_accuracy,
                     "p_empirical": sp.p_empirical,
                     "p_vs_chance_method": sp.p_vs_chance_method,
@@ -905,6 +1029,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     "pooled_test_total": sp.pooled_test_total,
                     "alpha_ratio": sp.alpha_ratio,
                     "beta_ratio": sp.beta_ratio,
+                    "lateralization_index": sp.lateralization_index,
                 }
             )
     df_subject = pd.DataFrame(rows)
@@ -923,6 +1048,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             ("gedai_mrcp", "gedai"),
             ("icalabel", "baseline"),
             ("gedai", "icalabel"),
+            ("asr", "baseline"),
+            ("gedai", "asr"),
+            ("icalabel", "asr"),
             ("pylossless", "baseline"),
             ("gedai", "pylossless"),
             ("icalabel", "pylossless"),
