@@ -71,7 +71,12 @@ FALLBACK_CH_NAMES = [
 # ---------------------------------------------------------------------------
 
 def _find_subject_file(raw_root: Path, subject: int) -> Path:
-    """Try common AASD naming patterns; raise FileNotFoundError if none found."""
+    """Try common AASD naming patterns; raise FileNotFoundError if none found.
+
+    Also performs a glob search inside subject sub-folders so that any
+    filename (e.g. ``p1_processed.mat``, ``sub-01.mat``) is found
+    automatically without hardcoding the exact name.
+    """
     candidates = [
         raw_root / f"subject_{subject}.mat",
         raw_root / f"subject{subject:02d}.mat",
@@ -94,10 +99,43 @@ def _find_subject_file(raw_root: Path, subject: int) -> Path:
     for p in candidates:
         if p.exists():
             return p
+
+    # ---- Glob fallback: find any .mat (or .cnt) inside the subject sub-folder.
+    # This handles unknown filenames inside S1/, S01/, s1/, etc.
+    subfolder_patterns = [
+        raw_root / f"S{subject}",
+        raw_root / f"S{subject:02d}",
+        raw_root / f"s{subject}",
+        raw_root / f"s{subject:02d}",
+        raw_root / f"Sub{subject}",
+        raw_root / f"Sub{subject:02d}",
+        raw_root / f"subject_{subject}",
+        raw_root / f"subject{subject:02d}",
+    ]
+    for folder in subfolder_patterns:
+        if folder.is_dir():
+            # Prefer .mat; fall back to .cnt
+            for ext in ("*.mat", "*.cnt"):
+                hits = sorted(folder.glob(ext))
+                if len(hits) == 1:
+                    return hits[0]
+                if len(hits) > 1:
+                    # Multiple files — pick the one whose stem most closely matches
+                    # the subject number (e.g. "S1", "sub01", "p1", etc.)
+                    import re
+                    for h in hits:
+                        if re.search(rf"\b0*{subject}\b", h.stem, re.IGNORECASE):
+                            return h
+                    # Nothing matched by number — return first alphabetically
+                    return hits[0]
+
     tried = "\n  ".join(str(c) for c in candidates)
     raise FileNotFoundError(
-        f"Cannot find AASD file for subject {subject}. Tried:\n  {tried}\n"
-        f"Place MAT files in {raw_root} with one of the above names."
+        f"Cannot find AASD file for subject {subject}.\n"
+        f"Tried exact paths:\n  {tried}\n"
+        f"Also searched for any *.mat/*.cnt in sub-folders: "
+        f"{[str(f) for f in subfolder_patterns]}\n"
+        f"Place MAT files in {raw_root} or a numbered sub-folder."
     )
 
 
