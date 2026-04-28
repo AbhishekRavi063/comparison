@@ -315,18 +315,24 @@ def plot_topomap_alpha(
             ch_power.append(p_alpha)
         alpha_power_maps[pipeline] = np.array(ch_power)
 
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
-    if n == 1:
+    baseline_map = alpha_power_maps.get("baseline", None)
+
+    # Add difference maps (baseline - pipeline) to show WHAT was removed WHERE
+    diff_pipelines = [p for p in pipelines_to_show if p != "baseline" and baseline_map is not None]
+    n_panels = n + len(diff_pipelines)
+
+    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels, 4))
+    if n_panels == 1:
         axes = [axes]
 
-    baseline_map = alpha_power_maps.get("baseline", None)
     vmax = max(m.max() for m in alpha_power_maps.values())
     vmin = 0.0
 
-    for ax, pipeline in zip(axes, pipelines_to_show):
+    # Left panels: absolute alpha power per pipeline
+    for ax, pipeline in zip(axes[:n], pipelines_to_show):
         pmap = alpha_power_maps[pipeline]
         try:
-            mne.viz.plot_topomap(
+            im, _ = mne.viz.plot_topomap(
                 pmap, info, axes=ax, show=False,
                 vlim=(vmin, vmax), cmap="hot_r",
                 names=None, sensors=False,
@@ -336,15 +342,159 @@ def plot_topomap_alpha(
             continue
         ax.set_title(PIPELINE_LABELS.get(pipeline, pipeline), fontsize=11, fontweight="bold")
 
+    # Right panels: difference maps (what was removed = baseline - pipeline)
+    for ax, pipeline in zip(axes[n:], diff_pipelines):
+        diff = baseline_map - alpha_power_maps[pipeline]
+        diff_max = np.abs(diff).max()
+        try:
+            mne.viz.plot_topomap(
+                diff, info, axes=ax, show=False,
+                vlim=(-diff_max, diff_max), cmap="RdBu_r",
+                names=None, sensors=False,
+            )
+        except Exception:
+            ax.set_title(f"Removed by {PIPELINE_LABELS.get(pipeline, pipeline)}\n(failed)")
+            continue
+        ax.set_title(
+            f"Removed by {PIPELINE_LABELS.get(pipeline, pipeline)}\n(red=removed, blue=added)",
+            fontsize=9, fontweight="bold",
+        )
+
     fig.suptitle(
         f"Subject {subject_id} — Alpha power topography (8–12 Hz)\n"
-        "Parietal lateralization pattern preserved after GEDAI",
-        fontsize=10, fontweight="bold",
+        "Left: absolute power per pipeline  |  Right: what each method removed\n"
+        "Frontal removal = noise; parietal preserved = brain signal",
+        fontsize=9, fontweight="bold",
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(out_dir / f"topomap_alpha_sub{subject_id}.png", dpi=180)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Figure 6 — Group-level statistics: Wilcoxon + Cohen's d
+# ---------------------------------------------------------------------------
+
+def plot_group_statistics(csv_path: Path, out_dir: Path) -> pd.DataFrame:
+    """Wilcoxon signed-rank test + Cohen's d for every pipeline vs baseline.
+
+    Produces:
+    - group_statistics.csv  — p-values, Cohen's d, mean diff per pipeline × backbone
+    - group_statistics.png  — bar chart of Cohen's d with significance markers
+    """
+    from scipy.stats import wilcoxon
+
+    df = pd.read_csv(csv_path)
+    df_subj = df.groupby(["subject", "backbone", "pipeline"], as_index=False)["mean_auc"].first()
+
+    comparisons = [p for p in ["asr", "icalabel", "gedai"] if p in df_subj["pipeline"].unique()]
+    backbones   = [b for b in ["csp", "tangent"] if b in df_subj["backbone"].unique()]
+
+    rows = []
+    for backbone in backbones:
+        baseline_vals = (
+            df_subj[(df_subj["backbone"] == backbone) & (df_subj["pipeline"] == "baseline")]
+            .sort_values("subject")["mean_auc"].values
+        )
+        for pipeline in comparisons:
+            pipe_vals = (
+                df_subj[(df_subj["backbone"] == backbone) & (df_subj["pipeline"] == pipeline)]
+                .sort_values("subject")["mean_auc"].values
+            )
+            n = min(len(baseline_vals), len(pipe_vals))
+            if n < 2:
+                continue
+            b_v, p_v = baseline_vals[:n], pipe_vals[:n]
+            diff = p_v - b_v
+            mean_diff = float(diff.mean())
+
+            # Wilcoxon signed-rank test
+            try:
+                _, p_val = wilcoxon(p_v, b_v, alternative="greater")
+            except Exception:
+                p_val = 1.0
+
+            # Cohen's d (paired)
+            std_diff = float(diff.std(ddof=1)) if n > 1 else 1e-9
+            cohen_d  = mean_diff / std_diff if std_diff > 0 else 0.0
+
+            rows.append({
+                "backbone":  backbone,
+                "pipeline":  pipeline,
+                "n_subjects": n,
+                "mean_auc_baseline": float(b_v.mean()),
+                "mean_auc_pipeline": float(p_v.mean()),
+                "mean_diff":  round(mean_diff, 4),
+                "cohen_d":    round(cohen_d, 3),
+                "p_wilcoxon": float(p_val),
+                "significant": p_val < 0.05,
+            })
+
+    df_stats = pd.DataFrame(rows)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df_stats.to_csv(out_dir / "group_statistics.csv", index=False)
+
+    # Print summary
+    print("\n" + "=" * 70)
+    print("GROUP-LEVEL STATISTICS (Wilcoxon signed-rank, one-sided: pipeline > baseline)")
+    print("=" * 70)
+    for _, r in df_stats.iterrows():
+        sig = "***" if r["p_wilcoxon"] < 0.001 else ("**" if r["p_wilcoxon"] < 0.01
+              else ("*" if r["p_wilcoxon"] < 0.05 else "ns"))
+        print(f"  {BACKBONE_LABELS.get(r['backbone'], r['backbone']):30s} "
+              f"{PIPELINE_LABELS.get(r['pipeline'], r['pipeline']):12s} "
+              f"Δ={r['mean_diff']:+.3f}  d={r['cohen_d']:.2f}  "
+              f"p={r['p_wilcoxon']:.4f} {sig}")
+    print("=" * 70 + "\n")
+
+    # Plot Cohen's d bar chart
+    if df_stats.empty:
+        return df_stats
+
+    fig, axes = plt.subplots(1, len(backbones), figsize=(5 * len(backbones), 5), sharey=True)
+    if len(backbones) == 1:
+        axes = [axes]
+
+    for ax, backbone in zip(axes, backbones):
+        sub = df_stats[df_stats["backbone"] == backbone]
+        pipes  = sub["pipeline"].tolist()
+        d_vals = sub["cohen_d"].tolist()
+        p_vals = sub["p_wilcoxon"].tolist()
+        colors = [PIPELINE_COLORS.get(p, "#888888") for p in pipes]
+        labels = [PIPELINE_LABELS.get(p, p) for p in pipes]
+
+        bars = ax.bar(range(len(pipes)), d_vals, color=colors, alpha=0.80,
+                      edgecolor="white", linewidth=0.5)
+
+        # Significance stars
+        for i, (d, p) in enumerate(zip(d_vals, p_vals)):
+            star = "***" if p < 0.001 else ("**" if p < 0.01 else ("*" if p < 0.05 else "ns"))
+            ax.text(i, max(d + 0.05, 0.1), star, ha="center", va="bottom",
+                    fontsize=11, fontweight="bold")
+
+        # Cohen's d thresholds
+        for thresh, label, ls in [(0.2, "small", ":"), (0.5, "medium", "--"), (0.8, "large", "-.")]:
+            ax.axhline(thresh, color="gray", linestyle=ls, linewidth=0.8, alpha=0.6)
+            ax.text(len(pipes) - 0.5, thresh + 0.02, label, fontsize=8, color="gray", ha="right")
+
+        ax.set_xticks(range(len(pipes)))
+        ax.set_xticklabels(labels, fontsize=11)
+        ax.set_ylabel("Cohen's d (vs Baseline)", fontsize=12)
+        ax.set_title(f"{BACKBONE_LABELS.get(backbone, backbone)}\nEffect size vs baseline",
+                     fontsize=11, fontweight="bold")
+        ax.set_ylim(bottom=min(0, min(d_vals) - 0.1))
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.suptitle("Group-level effect size (Cohen's d) — pipeline vs baseline\n"
+                 "d > 0.8 = large effect  |  * p<0.05  ** p<0.01  *** p<0.001",
+                 fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out_dir / "group_statistics.png", dpi=180)
+    plt.close(fig)
+
+    return df_stats
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +578,9 @@ def generate_all_preprint_figures(
 
     plot_alpha_retention(csv_path, out_dir)
     print("[preprint] ✓ Alpha/beta retention")
+
+    plot_group_statistics(csv_path, out_dir)
+    print("[preprint] ✓ Group statistics (Wilcoxon + Cohen's d)")
 
     write_summary_table(csv_path, out_dir)
     print("[preprint] ✓ Summary table")
