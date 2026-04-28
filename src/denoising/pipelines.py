@@ -2221,9 +2221,22 @@ def preprocess_subject_data(
         ).astype(np.float32, copy=False)
 
     if denoising == "asr":
-        return apply_asr(X, sfreq, ch_names, l_freq, h_freq).astype(
-            np.float32, copy=False
-        )
+        try:
+            return apply_asr(X, sfreq, ch_names, l_freq, h_freq).astype(
+                np.float32, copy=False
+            )
+        except Exception as _asr_err:
+            import warnings as _w
+            _w.warn(
+                f"ASR failed ({type(_asr_err).__name__}: {_asr_err}); "
+                "returning bandpass-filtered data as ASR fallback.",
+                RuntimeWarning,
+            )
+            # Fall back to baseline (bandpass only) so the pipeline completes
+            from .filters import bandpass_filter as _bp
+            return _bp(
+                np.asarray(X, dtype=np.float32).copy(), sfreq, l_freq, h_freq
+            ).astype(np.float32, copy=False)
 
     if denoising == "icalabel":
         # Delete original X immediately if possible or rely on apply_icalabel to be smart
