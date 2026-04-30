@@ -168,6 +168,13 @@ def _select_channel_idx(ch_names: List[str], wanted: Tuple[str, ...]) -> np.ndar
     return np.asarray(idx, dtype=int)
 
 
+def _average_reference_trials(X: np.ndarray) -> np.ndarray:
+    """Return EEG data after common-average reference across channels."""
+    X_ref = np.asarray(X, dtype=np.float32).copy()
+    X_ref -= X_ref.mean(axis=1, keepdims=True)
+    return X_ref
+
+
 def _concat_trials_with_bridges(
     X: np.ndarray, bridge_samples: int
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -211,8 +218,17 @@ def _extract_trials_from_concat(
 
 
 def _compute_aasd_task_refcov(X: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Build a task-aware channel covariance for AASD (binary attention labels)."""
+    """Build a class-discriminative reference covariance for AASD.
+
+    Uses a CSP-style construction: the generalized eigendecomposition of
+    (cov_class0, cov_class0 + cov_class1) yields directions whose eigenvalues
+    are most extreme (close to 0 or 1) for the most class-discriminative
+    components. We construct a reference covariance that emphasizes those
+    directions, so GEDAI preserves attention-discriminative subspaces while
+    still keeping a small share of the overall task covariance for stability.
+    """
     from sklearn.covariance import LedoitWolf
+    from scipy.linalg import eigh
 
     X = np.asarray(X, dtype=np.float64)
     y = np.asarray(y).ravel()
@@ -221,12 +237,11 @@ def _compute_aasd_task_refcov(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     if X.shape[0] != y.shape[0]:
         raise ValueError(f"AASD refcov trial mismatch: X={X.shape[0]} y={y.shape[0]}")
 
-    # Per-window channel covariance, averaged by class, then shrinkage-stabilized.
+    n_ch = int(X.shape[1])
     c0 = X[y == 0]
     c1 = X[y == 1]
     if len(c0) < 2 or len(c1) < 2:
-        # Fallback to global shrinkage covariance if one class is too small.
-        Z = X.transpose(1, 0, 2).reshape(X.shape[1], -1).T
+        Z = X.transpose(1, 0, 2).reshape(n_ch, -1).T
         return LedoitWolf().fit(Z).covariance_.astype(np.float64, copy=False)
 
     def _mean_cov(arr: np.ndarray) -> np.ndarray:
@@ -241,13 +256,45 @@ def _compute_aasd_task_refcov(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     cov_task = 0.5 * (cov0 + cov1)
     cov_task = 0.5 * (cov_task + cov_task.T)
 
-    # Blend with global Ledoit-Wolf covariance for numerical stability.
-    Z = X.transpose(1, 0, 2).reshape(X.shape[1], -1).T
+    Z = X.transpose(1, 0, 2).reshape(n_ch, -1).T
     cov_lw = LedoitWolf().fit(Z).covariance_.astype(np.float64, copy=False)
-    cov = 0.7 * cov_task + 0.3 * cov_lw
+
+    # CSP-style discriminative subspace: emphasize directions where the class
+    # ratio is most extreme. Add ridge to stabilize the generalized solver.
+    csp_ridge = 1e-6 * float(np.trace(cov_task) / max(1, n_ch))
+    cov_a = cov0 + csp_ridge * np.eye(n_ch, dtype=np.float64)
+    cov_b = cov0 + cov1 + 2.0 * csp_ridge * np.eye(n_ch, dtype=np.float64)
+    try:
+        eigvals, eigvecs = eigh(cov_a, cov_b)
+    except Exception:
+        # Fall back to non-discriminative blend if the GED is unstable.
+        cov_blend = 0.7 * cov_task + 0.3 * cov_lw
+        cov_blend = 0.5 * (cov_blend + cov_blend.T)
+        eps = 1e-6 * float(np.trace(cov_blend) / max(1, n_ch))
+        return (cov_blend + eps * np.eye(n_ch)).astype(np.float64, copy=False)
+
+    # Pick the most discriminative directions (eigenvalues farthest from 0.5).
+    discriminance = np.abs(eigvals - 0.5)
+    order = np.argsort(-discriminance)
+    n_keep = max(4, min(int(n_ch // 2), 24))
+    keep = order[:n_keep]
+    vecs = eigvecs[:, keep]
+    # Weight kept directions by their discriminative strength so GEDAI preserves
+    # the most attention-relevant subspace.
+    weights = discriminance[keep]
+    weights = weights / (np.max(weights) + 1e-12)
+    cov_disc = vecs @ np.diag(weights.astype(np.float64)) @ vecs.T
+    cov_disc = 0.5 * (cov_disc + cov_disc.T)
+
+    # Final reference: 60% class-discriminative subspace, 25% task covariance,
+    # 15% Ledoit-Wolf covariance for spectral conditioning.
+    cov_disc_norm = cov_disc / (float(np.trace(cov_disc) / max(1, n_ch)) + 1e-12)
+    cov_task_norm = cov_task / (float(np.trace(cov_task) / max(1, n_ch)) + 1e-12)
+    cov_lw_norm = cov_lw / (float(np.trace(cov_lw) / max(1, n_ch)) + 1e-12)
+    cov = 0.60 * cov_disc_norm + 0.25 * cov_task_norm + 0.15 * cov_lw_norm
     cov = 0.5 * (cov + cov.T)
-    eps = 1e-6 * float(np.trace(cov) / max(1, cov.shape[0]))
-    cov += eps * np.eye(cov.shape[0], dtype=np.float64)
+    eps = 1e-6 * float(np.trace(cov) / max(1, n_ch))
+    cov += eps * np.eye(n_ch, dtype=np.float64)
     return cov
 
 
@@ -717,6 +764,10 @@ def apply_gedai(
     retention_median_min: float = GEDAI_RETENTION_MEDIAN_MIN,
     retention_hard_min: float = GEDAI_RETENTION_HARD_MIN,
     reference_cov: np.ndarray | None = None,
+    average_reference_baseline: bool = False,
+    gedai_duration: float = 1.0,
+    highpass_cutoff: float | None = 0.1,
+    threshold_relaxation_scales: Tuple[float, ...] = (),
 ) -> np.ndarray:
     """Apply GEDAI denoising using the official two-step spectral pipeline.
 
@@ -761,7 +812,8 @@ def apply_gedai(
         return bandpass_filter(X, sfreq, l_freq, h_freq).astype(np.float32)
 
     X = np.asarray(X, dtype=np.float32)
-    x_band_ref = bandpass_filter(X.copy(), sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+    x_ref_input = _average_reference_trials(X) if average_reference_baseline else X.copy()
+    x_band_ref = bandpass_filter(x_ref_input, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
     n_trials, n_channels, n_times = X.shape
 
     # Use standard leadfield names when data has generic names
@@ -814,7 +866,11 @@ def apply_gedai(
 
     try:
         # Step 1: Broadband GEDAI
-        gedai_broad = Gedai(wavelet_type="haar", wavelet_level=0)
+        gedai_broad = Gedai(
+            wavelet_type="haar",
+            wavelet_level=0,
+            highpass_cutoff=highpass_cutoff,
+        )
         broad_nm = (
             float(broadband_noise_multiplier)
             if broadband_noise_multiplier is not None
@@ -828,8 +884,14 @@ def apply_gedai(
         fit_kwargs = dict(noise_multiplier=broad_nm, n_jobs=n_jobs, verbose=False)
         if reference_cov is not None:
             fit_kwargs["reference_cov"] = np.asarray(reference_cov, dtype=np.float64)
-        gedai_broad.fit_raw(raw, **fit_kwargs)
-        raw_broad_clean = gedai_broad.transform_raw(raw, n_jobs=n_jobs, overlap=0.5, verbose=False)
+        gedai_broad.fit_raw(raw, duration=float(gedai_duration), overlap=0.5, **fit_kwargs)
+        raw_broad_clean = gedai_broad.transform_raw(
+            raw,
+            duration=float(gedai_duration),
+            n_jobs=n_jobs,
+            overlap=0.5,
+            verbose=False,
+        )
         
         # Cleanup input raw to free 2.5GB
         del raw
@@ -841,13 +903,23 @@ def apply_gedai(
                 wavelet_type="haar",
                 wavelet_level=GEDAI_SPECTRAL_WAVELET_LEVEL,
                 wavelet_low_cutoff=GEDAI_SPECTRAL_LOW_CUTOFF,
+                highpass_cutoff=highpass_cutoff,
             )
             fit_kwargs = dict(noise_multiplier=spec_nm, n_jobs=n_jobs, verbose=False)
             if reference_cov is not None:
                 fit_kwargs["reference_cov"] = np.asarray(reference_cov, dtype=np.float64)
-            gedai_spectral.fit_raw(raw_broad_clean, **fit_kwargs)
+            gedai_spectral.fit_raw(
+                raw_broad_clean,
+                duration=float(gedai_duration),
+                overlap=0.5,
+                **fit_kwargs,
+            )
             raw_clean = gedai_spectral.transform_raw(
-                raw_broad_clean, n_jobs=n_jobs, overlap=0.5, verbose=False
+                raw_broad_clean,
+                duration=float(gedai_duration),
+                n_jobs=n_jobs,
+                overlap=0.5,
+                verbose=False,
             )
             del raw_broad_clean
             gc.collect()
@@ -857,8 +929,7 @@ def apply_gedai(
     except Exception as e:
         import warnings
         warnings.warn(f"GEDAI two-step failed ({e}); falling back to baseline.")
-        # Re-apply bandpass on the fly to save memory
-        return bandpass_filter(X_kept, sfreq, l_freq, h_freq).astype(np.float32)
+        return x_band_ref.astype(np.float32, copy=False)
 
     X_clean_concat = raw_clean.get_data().astype(np.float32, copy=False)
     X_clean_kept = _extract_trials_from_concat(X_clean_concat, trial_starts, n_times)
@@ -891,8 +962,93 @@ def apply_gedai(
             import warnings
             warnings.warn(
                 f"GEDAI retention ratio {effective_ratio:.3f} < {retention_median_min:.2f}; "
-                "retrying with a more conservative spectral pass."
+                "retrying with a more conservative GEDAI pass."
             )
+
+            # For broadband AASD, SENSAI can choose a threshold that removes
+            # normal auditory-attention EEG along with artifacts. Prefer the
+            # smallest threshold relaxation that passes the physiological
+            # retention guard, so GEDAI remains active without over-removal.
+            if threshold_relaxation_scales and not use_spectral_step:
+                X_relax_concat, _ = _concat_trials_with_bridges(
+                    X_kept, bridge_samples=bridge_samples
+                )
+                raw_relax = mne.io.RawArray(X_relax_concat, info_kept, verbose="ERROR")
+                del X_relax_concat
+                raw_relax.set_eeg_reference("average", projection=False, verbose=False)
+                g_relax = Gedai(
+                    wavelet_type="haar",
+                    wavelet_level=0,
+                    highpass_cutoff=highpass_cutoff,
+                )
+                relax_kwargs = dict(noise_multiplier=broad_nm, n_jobs=n_jobs, verbose=False)
+                if reference_cov is not None:
+                    relax_kwargs["reference_cov"] = np.asarray(reference_cov, dtype=np.float64)
+                g_relax.fit_raw(
+                    raw_relax,
+                    duration=float(gedai_duration),
+                    overlap=0.5,
+                    **relax_kwargs,
+                )
+                original_thresholds = [
+                    float(wf.get("threshold", 0.0))
+                    for wf in getattr(g_relax, "wavelets_fits", [])
+                ]
+                best_relaxed = None
+                best_relaxed_ratio = -np.inf
+                for scale in threshold_relaxation_scales:
+                    scale = float(scale)
+                    if scale <= 1.0:
+                        continue
+                    for wf, threshold in zip(
+                        getattr(g_relax, "wavelets_fits", []), original_thresholds
+                    ):
+                        wf["threshold"] = threshold * scale
+                    raw_relaxed_out = g_relax.transform_raw(
+                        raw_relax,
+                        duration=float(gedai_duration),
+                        n_jobs=n_jobs,
+                        overlap=0.5,
+                        verbose=False,
+                    )
+                    x_relaxed_concat = raw_relaxed_out.get_data().astype(
+                        np.float32, copy=False
+                    )
+                    x_relaxed_kept = _extract_trials_from_concat(
+                        x_relaxed_concat, trial_starts, n_times
+                    )
+                    if no_pos_idx:
+                        x_relaxed = np.zeros((n_trials, n_channels, n_times), dtype=np.float32)
+                        x_relaxed[:, kept_idx, :] = x_relaxed_kept
+                    else:
+                        x_relaxed = x_relaxed_kept
+                    x_relaxed = bandpass_filter(
+                        x_relaxed, sfreq, l_freq, h_freq
+                    ).astype(np.float32, copy=False)
+                    relaxed_ratio = _retention_ratios(
+                        x_clean=x_relaxed,
+                        x_band_ref=x_band_ref,
+                        sfreq=sfreq,
+                        l_freq=l_freq,
+                        h_freq=h_freq,
+                        ch_names=ch_names_use,
+                        include_subband_guards=include_subband_guards,
+                    )
+                    if relaxed_ratio > best_relaxed_ratio:
+                        best_relaxed_ratio = relaxed_ratio
+                        best_relaxed = x_relaxed
+                    if relaxed_ratio >= retention_median_min:
+                        warnings.warn(
+                            f"GEDAI retention-calibrated threshold scale {scale:.2f} "
+                            f"passed retention ({relaxed_ratio:.3f})."
+                        )
+                        return x_relaxed
+                if best_relaxed is not None and best_relaxed_ratio >= retention_hard_min:
+                    warnings.warn(
+                        f"GEDAI relaxed threshold passed hard retention only "
+                        f"({best_relaxed_ratio:.3f}); returning conservative GEDAI output."
+                    )
+                    return best_relaxed
 
             # Conservative retry: keep broadband pass, but relax the spectral pass.
             X_retry_concat, _ = _concat_trials_with_bridges(
@@ -901,10 +1057,14 @@ def apply_gedai(
             raw_retry_in = mne.io.RawArray(X_retry_concat, info_kept, verbose="ERROR")
             del X_retry_concat
             raw_retry_in.set_eeg_reference("average", projection=False, verbose=False)
-            g_broad_retry = Gedai(wavelet_type="haar", wavelet_level=0)
+            g_broad_retry = Gedai(
+                wavelet_type="haar",
+                wavelet_level=0,
+                highpass_cutoff=highpass_cutoff,
+            )
             g_broad_retry.fit_raw(
                 raw_retry_in,
-                # More conservative retry for AASD-like short windows: lower NM.
+                # Legacy retry path: rerun broadband GEDAI with bounded NM.
                 **{
                     "noise_multiplier": max(2.0, min(broad_nm, 4.0)),
                     "n_jobs": n_jobs,
@@ -915,14 +1075,21 @@ def apply_gedai(
                         else {}
                     ),
                 },
+                duration=float(gedai_duration),
+                overlap=0.5,
             )
             raw_broad_retry = g_broad_retry.transform_raw(
-                raw_retry_in, n_jobs=n_jobs, overlap=0.5, verbose=False
+                raw_retry_in,
+                duration=float(gedai_duration),
+                n_jobs=n_jobs,
+                overlap=0.5,
+                verbose=False,
             )
             g_spec_retry = Gedai(
                 wavelet_type="haar",
                 wavelet_level=max(3, GEDAI_SPECTRAL_WAVELET_LEVEL - 1),
                 wavelet_low_cutoff=GEDAI_SPECTRAL_LOW_CUTOFF,
+                highpass_cutoff=highpass_cutoff,
             )
             if use_spectral_step:
                 g_spec_retry.fit_raw(
@@ -937,9 +1104,15 @@ def apply_gedai(
                             else {}
                         ),
                     },
+                    duration=float(gedai_duration),
+                    overlap=0.5,
                 )
                 raw_retry_out = g_spec_retry.transform_raw(
-                    raw_broad_retry, n_jobs=n_jobs, overlap=0.5, verbose=False
+                    raw_broad_retry,
+                    duration=float(gedai_duration),
+                    n_jobs=n_jobs,
+                    overlap=0.5,
+                    verbose=False,
                 )
             else:
                 raw_retry_out = raw_broad_retry
@@ -2216,6 +2389,15 @@ def preprocess_subject_data(
             X0 = np.asarray(X, dtype=np.float32).copy()
             X0 -= X0.mean(axis=1, keepdims=True)
             return bandpass_filter(X0, sfreq, l_freq, h_freq).astype(np.float32, copy=False)
+        if dataset_name and "aasd" in dataset_name.lower():
+            is_alpha_only_aasd = float(l_freq) >= 7.5 and float(h_freq) <= 12.5
+            if not is_alpha_only_aasd:
+                # GEDAI's EEG path necessarily applies common-average reference.
+                # Use the same reference for the paper-style broadband baseline so
+                # baseline vs GEDAI differs by denoising, not by referencing.
+                return bandpass_filter(
+                    _average_reference_trials(X), sfreq, l_freq, h_freq
+                ).astype(np.float32, copy=False)
         return bandpass_filter(
             np.asarray(X, dtype=np.float32).copy(), sfreq, l_freq, h_freq
         ).astype(np.float32, copy=False)
@@ -2342,15 +2524,76 @@ def preprocess_subject_data(
         X_trials, y_trials, win_per_trial = _aasd_reconstruct_trials_from_windows(
             X, y, sfreq=float(sfreq), trial_duration_s=60.0
         )
-        refcov = _compute_aasd_task_refcov(X_trials, y_trials)
-        # AASD alpha-band fix: the retention guard must NOT check the alpha subband
-        # (8–12 Hz) because that IS the decode band — GEDAI legitimately suppresses
-        # some alpha variance while cleaning, which the guard misreads as over-removal.
-        # include_subband_guards=False keeps only the full-band and motor-channel
-        # ratio checks (both on l_freq–h_freq), which are meaningful for AASD.
-        # Thresholds are also relaxed: 60s trials have enough data but GEDAI's
-        # broadband spatial filter naturally attenuates narrow-band alpha more than
-        # broadband MI data, so the 0.65 / 0.45 MI-calibrated thresholds are too tight.
+        # Keep the old alpha-tuned behavior for the original 8-12 Hz AASD story,
+        # but switch to a much safer broadband mode for paper-style decoding.
+        # The paper-style run uses 0.1-45 Hz and a Transformer; the old alpha path
+        # disabled meaningful guards and always forced GEDAI output, which is what
+        # caused the heavy over-removal in smoke tests.
+        is_alpha_only_aasd = float(l_freq) >= 7.5 and float(h_freq) <= 12.5
+        refcov_input = (
+            X_trials if is_alpha_only_aasd else _average_reference_trials(X_trials)
+        )
+        # Leakage-safe option: when train_idx is provided (window-level indices),
+        # restrict the refcov fit to those trials whose windows are all in train.
+        # AASD uses grouped CV where 60-second trials are kept intact, so each
+        # trial's windows are either entirely train or entirely test.
+        refcov_X = refcov_input
+        refcov_y = y_trials
+        if train_idx is not None and win_per_trial > 0:
+            train_idx_arr = np.asarray(train_idx, dtype=int).ravel()
+            train_mask_win = np.zeros(int(X.shape[0]), dtype=bool)
+            train_mask_win[train_idx_arr] = True
+            n_trials_total = int(X_trials.shape[0])
+            train_trials_mask = np.zeros(n_trials_total, dtype=bool)
+            for t_i in range(n_trials_total):
+                start = t_i * int(win_per_trial)
+                end = start + int(win_per_trial)
+                if end <= train_mask_win.shape[0] and bool(np.all(train_mask_win[start:end])):
+                    train_trials_mask[t_i] = True
+            n_train_trials = int(train_trials_mask.sum())
+            classes_present = np.unique(refcov_y[train_trials_mask]) if n_train_trials > 0 else np.array([])
+            if n_train_trials >= 4 and classes_present.size >= 2:
+                refcov_X = refcov_input[train_trials_mask]
+                refcov_y = y_trials[train_trials_mask]
+            else:
+                import warnings as _w
+                _w.warn(
+                    "AASD per-fold refcov fallback: train trials="
+                    f"{n_train_trials}, classes={classes_present.size}; "
+                    "using all trials for refcov this fold.",
+                    RuntimeWarning,
+                )
+        refcov = _compute_aasd_task_refcov(refcov_X, refcov_y)
+        if is_alpha_only_aasd:
+            gedai_kwargs = dict(
+                include_subband_guards=False,
+                broadband_noise_multiplier=6.0,
+                spectral_noise_multiplier=3.0,
+                use_spectral_step=True,
+                retention_median_min=0.30,
+                retention_hard_min=0.0,   # preserve legacy alpha-run behavior
+                reference_cov=refcov,
+            )
+        else:
+            # Broadband paper-style mode:
+            # - lower noise multipliers
+            # - skip spectral refinement (too aggressive in smoke tests)
+            # - keep alpha/beta guards enabled
+            # - use real fallback thresholds so baseline is preserved if GEDAI
+            #   destroys the physiologically meaningful content
+            gedai_kwargs = dict(
+                include_subband_guards=True,
+                broadband_noise_multiplier=2.0,
+                spectral_noise_multiplier=2.0,
+                use_spectral_step=False,
+                retention_median_min=0.60,
+                retention_hard_min=0.50,
+                reference_cov=refcov,
+                average_reference_baseline=True,
+                gedai_duration=8.0,
+                highpass_cutoff=None,
+                threshold_relaxation_scales=(1.25, 1.5, 2.0, 3.0),
+            )
         X_trials_clean = apply_gedai(
             X_trials,
             sfreq,
@@ -2359,13 +2602,7 @@ def preprocess_subject_data(
             h_freq,
             gedai_n_jobs=gedai_n_jobs,
             bridge_samples=0,
-            include_subband_guards=False,
-            broadband_noise_multiplier=6.0,   # FAQ: conservative pass, preserve neural signals
-            spectral_noise_multiplier=3.0,
-            use_spectral_step=True,
-            retention_median_min=0.30,
-            retention_hard_min=0.0,   # guarantee GEDAI always runs; never revert
-            reference_cov=refcov,
+            **gedai_kwargs,
         ).astype(np.float32, copy=False)
         Xw, yw = _aasd_window_trials_back(X_trials_clean, y_trials, win_per_trial)
         if Xw.shape[0] != X.shape[0]:

@@ -227,6 +227,10 @@ from ..backbones.time_domain_lda import (
     run_time_lda_cv_precomputed_features,
     fit_time_lda_model_preprocessed,
 )
+from ..backbones.transformer_eeg import (
+    run_transformer_cv_preprocessed,
+    fit_transformer_model_preprocessed,
+)
 from ..denoising.pipelines import MRCP_MOTOR_CHANNELS, preprocess_subject_data
 from ..data.dataset_noise_inspection import (
     plot_denoising_comparison_overlay,
@@ -277,6 +281,63 @@ def _compute_lateralization_index(
     return float(np.mean(li_vals)) if li_vals else 0.0
 
 
+def _build_cv_splits(
+    X: np.ndarray,
+    y: np.ndarray,
+    cfg: "ExperimentConfig",
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Build CV splits, keeping full AASD 60 s trials together when needed."""
+    if (
+        cfg.dataset_label
+        and "aasd" in str(cfg.dataset_label).lower()
+        and int(X.shape[0]) >= 120
+        and int(X.shape[0]) % 60 == 0
+        and getattr(cfg.backbones, "use_transformer", False)
+    ):
+        n_trials = int(X.shape[0]) // 60
+        y_blocks = np.asarray(y).reshape(n_trials, 60)
+        y_trials = np.array(
+            [int(np.bincount(block.astype(int)).argmax()) for block in y_blocks],
+            dtype=np.int64,
+        )
+        cv = StratifiedKFold(
+            n_splits=cfg.cv.n_splits,
+            shuffle=cfg.cv.shuffle,
+            random_state=cfg.cv.random_state,
+        )
+        splits: List[Tuple[np.ndarray, np.ndarray]] = []
+        for tr_trials, te_trials in cv.split(np.zeros((n_trials, 1)), y_trials):
+            tr_idx = np.concatenate(
+                [np.arange(t * 60, (t + 1) * 60, dtype=int) for t in tr_trials]
+            )
+            te_idx = np.concatenate(
+                [np.arange(t * 60, (t + 1) * 60, dtype=int) for t in te_trials]
+            )
+            splits.append((tr_idx, te_idx))
+        return splits
+    cv = StratifiedKFold(
+        n_splits=cfg.cv.n_splits,
+        shuffle=cfg.cv.shuffle,
+        random_state=cfg.cv.random_state,
+    )
+    return list(cv.split(X, y))
+
+
+def _aasd_window_groups(
+    X: np.ndarray,
+    cfg: "ExperimentConfig",
+) -> np.ndarray | None:
+    """Return original-trial group ids for AASD 1-second windows when applicable."""
+    if (
+        cfg.dataset_label
+        and "aasd" in str(cfg.dataset_label).lower()
+        and int(X.shape[0]) >= 120
+        and int(X.shape[0]) % 60 == 0
+    ):
+        return np.arange(int(X.shape[0]), dtype=int) // 60
+    return None
+
+
 def _is_borderline_p_value(p_value: float, cfg: ExperimentConfig) -> bool:
     low = float(cfg.permutation.borderline_low)
     high = float(cfg.permutation.borderline_high)
@@ -312,6 +373,88 @@ def _score_time_lda_inner_cv(
         y=y,
         cv_splits=splits,
         fold_features=feats,
+    )
+    return float(np.mean(res.fold_accuracies))
+
+
+def _score_transformer_inner_cv(
+    X_proc: np.ndarray,
+    y: np.ndarray,
+    sfreq: float,
+    target_sfreq: float | None,
+    n_splits: int,
+    random_state: int,
+    groups: np.ndarray | None = None,
+) -> float:
+    """Mini-Transformer inner CV used as a same-architecture gate proxy.
+
+    Uses 1 layer, 64 dim, 5 epochs so it's fast but still tracks transformer
+    behavior much better than a tangent-space LDA proxy.
+    """
+    from ..backbones.transformer_eeg import run_transformer_cv_preprocessed
+
+    y = np.asarray(y).ravel()
+    _, counts = np.unique(y, return_counts=True)
+    if counts.size < 2:
+        return float("-inf")
+    inner_splits = int(max(2, min(int(n_splits), int(np.min(counts)))))
+
+    if groups is not None:
+        groups = np.asarray(groups)
+        unique_g = np.unique(groups)
+        group_labels = np.array(
+            [
+                int(np.bincount(y[groups == g].astype(int)).argmax())
+                for g in unique_g
+            ],
+            dtype=np.int64,
+        )
+        if len(np.unique(group_labels)) < 2 or unique_g.size < inner_splits:
+            cv = StratifiedKFold(
+                n_splits=inner_splits, shuffle=True, random_state=random_state
+            )
+            splits = list(cv.split(X_proc, y))
+        else:
+            gcv = StratifiedKFold(
+                n_splits=inner_splits, shuffle=True, random_state=random_state
+            )
+            splits = []
+            for tr_g_idx, te_g_idx in gcv.split(np.zeros((unique_g.size, 1)), group_labels):
+                train_g = set(unique_g[tr_g_idx].tolist())
+                test_g = set(unique_g[te_g_idx].tolist())
+                tr_idx = np.array(
+                    [i for i, g in enumerate(groups) if g in train_g], dtype=int
+                )
+                te_idx = np.array(
+                    [i for i, g in enumerate(groups) if g in test_g], dtype=int
+                )
+                splits.append((tr_idx, te_idx))
+    else:
+        cv = StratifiedKFold(
+            n_splits=inner_splits, shuffle=True, random_state=random_state
+        )
+        splits = list(cv.split(X_proc, y))
+
+    res = run_transformer_cv_preprocessed(
+        X_proc=X_proc,
+        y=y,
+        cv_splits=splits,
+        sfreq=sfreq,
+        target_sfreq=target_sfreq,
+        epochs=5,
+        batch_size=32,
+        learning_rate=5e-4,
+        weight_decay=1e-3,
+        dropout=0.3,
+        d_model=64,
+        n_heads=4,
+        n_layers=1,
+        ff_dim=64,
+        val_fraction=0.15,
+        patience=3,
+        device="cpu",
+        random_state=random_state,
+        groups=groups,
     )
     return float(np.mean(res.fold_accuracies))
 
@@ -373,6 +516,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         backbones.append("tangent")
     if getattr(cfg.backbones, "use_time_lda", False):
         backbones.append("time_lda")
+    if getattr(cfg.backbones, "use_transformer", False):
+        backbones.append("transformer")
 
     log = logging.getLogger("run_full_test")
     n_subj = len(cfg.subjects)
@@ -411,15 +556,18 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 f"Subject {sid}: {n_classes} classes detected. "
                 "Skipping CSP (binary-only) unless backbones.allow_csp_multiclass=true."
             )
-        cv = StratifiedKFold(
-            n_splits=cfg.cv.n_splits,
-            shuffle=cfg.cv.shuffle,
-            random_state=cfg.cv.random_state,
-        )
-        cv_splits = list(cv.split(X, y))
+        cv_splits = _build_cv_splits(X, y, cfg)
+        aasd_groups = _aasd_window_groups(X, cfg)
 
         # Pipeline order: baseline and ICALabel first, then GEDAI.
         mrcp_baseline_cache = None
+        aasd_baseline_cache: np.ndarray | None = None
+        aasd_gate_decisions: List[str] | None = None
+        # When ``gedai_aasd_perfold_refcov`` is enabled, the AASD GEDAI pipeline
+        # builds one X_proc per outer fold using only that fold's training
+        # trials for the refcov. Each entry is a (n_windows, n_ch, n_times)
+        # array with the GEDAI cleaning re-applied for that fold.
+        aasd_perfold_X_eval: List[np.ndarray] | None = None
         for pipeline in pipelines:
             if pipeline in ("gedai", "gedai_mrcp", "pylossless") and (
                 "baseline" in pipelines or "icalabel" in pipelines
@@ -435,7 +583,48 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 and cfg.dataset_label
                 and "eeg_emg_mrcp" in cfg.dataset_label.lower()
             )
-            if is_mrcp_gedai:
+            is_aasd_perfold_gedai = (
+                pipeline == "gedai"
+                and cfg.dataset_label
+                and "aasd" in cfg.dataset_label.lower()
+                and getattr(cfg.denoising, "gedai_aasd_perfold_refcov", False)
+            )
+            if is_aasd_perfold_gedai:
+                # Leakage-safe AASD GEDAI: refit the CSP-style refcov on each
+                # outer fold's training trials and re-clean the entire signal
+                # with that fold-specific filter. This costs K x apply_gedai
+                # per subject but removes the test-label leakage in the spatial
+                # filter direction, which is the right thing for a preprint.
+                aasd_perfold_X_eval = []
+                X_proc = None
+                X_eval = None
+                for fold_i, (train_idx, _test_idx) in enumerate(cv_splits):
+                    X_fold = preprocess_subject_data(
+                        X=X,
+                        sfreq=subj_data.sfreq,
+                        ch_names=subj_data.ch_names,
+                        y=y,
+                        l_freq=cfg.bandpass.l_freq,
+                        h_freq=cfg.bandpass.h_freq,
+                        denoising="gedai",
+                        subject_id=sid,
+                        dataset_name=cfg.dataset_label or "",
+                        gedai_n_jobs=cfg.memory.n_jobs,
+                        data_root=cfg.data_root,
+                        train_idx=train_idx,
+                        use_anti_laplacian=cfg.denoising.use_anti_laplacian,
+                        anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
+                    )
+                    X_fold_eval = (
+                        X_fold[:, eval_ch_idx, :] if eval_ch_idx is not None else X_fold
+                    )
+                    aasd_perfold_X_eval.append(X_fold_eval.astype(np.float32, copy=False))
+                    if fold_i == 0:
+                        X_proc = X_fold
+                        X_eval = X_fold_eval
+                    del X_fold
+                gc.collect()
+            elif is_mrcp_gedai:
                 # Leakage-safe mode: fit C_mrcp on each fold's training trials only,
                 # then run GEDAI with that fold-specific reference covariance.
                 X_proc = None
@@ -548,6 +737,16 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     and "eeg_emg_mrcp" in cfg.dataset_label.lower()
                 ):
                     mrcp_baseline_cache = X_proc.copy()
+                if (
+                    pipeline == "baseline"
+                    and cfg.dataset_label
+                    and "aasd" in cfg.dataset_label.lower()
+                    and (
+                        getattr(cfg.denoising, "gedai_aasd_adaptive_gate", False)
+                        or getattr(cfg.denoising, "gedai_aasd_perfold_refcov", False)
+                    )
+                ):
+                    aasd_baseline_cache = X_proc.copy()
 
             if cfg.memory.save_denoised_npz:
                 ddir = results_root / cfg.memory.denoised_subdir
@@ -589,12 +788,16 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 beta_ratio = curr_beta / ref_beta
 
             # --- Alpha Lateralization Index ---
+            # Skipped for AASD: this dataset's MAT files don't ship channel
+            # labels, so our ch_names are fabricated 10-20 names. LI computed
+            # from those would be physiologically meaningless; report 0.0.
             li = 0.0
-            if (
-                cfg.dataset_label
-                and "aasd" in str(cfg.dataset_label).lower()
-                and X_proc is not None
-            ):
+            aasd_dataset = (
+                cfg.dataset_label and "aasd" in str(cfg.dataset_label).lower()
+            )
+            if aasd_dataset:
+                li = 0.0
+            elif X_proc is not None:
                 try:
                     li = _compute_lateralization_index(X_proc, y, subj_data.ch_names)
                 except Exception:
@@ -700,7 +903,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     std_acc = float(np.std(fold_acc, ddof=1))
                     pooled_c = int(res.pooled_test_correct)
                     pooled_t = int(res.pooled_test_total)
-                else:
+                elif backbone == "time_lda":
                     if time_lda_fold_features is None:
                         if is_mrcp_gedai:
                             active_fold_inputs = fold_X_eval
@@ -786,6 +989,156 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     std_acc = float(np.std(fold_acc, ddof=1))
                     pooled_c = int(res.pooled_test_correct)
                     pooled_t = int(res.pooled_test_total)
+                elif backbone == "transformer":
+                    aasd_gate_enabled = bool(
+                        getattr(cfg.denoising, "gedai_aasd_adaptive_gate", False)
+                    )
+                    aasd_perfold_enabled = bool(
+                        getattr(cfg.denoising, "gedai_aasd_perfold_refcov", False)
+                    )
+                    aasd_gate_active = (
+                        pipeline == "gedai"
+                        and cfg.dataset_label
+                        and "aasd" in cfg.dataset_label.lower()
+                        and (aasd_gate_enabled or aasd_perfold_enabled)
+                        and aasd_baseline_cache is not None
+                    )
+                    if aasd_gate_active:
+                        gate_margin = float(getattr(cfg.denoising, "gedai_aasd_gate_margin", 0.0))
+                        inner_splits = int(getattr(cfg.denoising, "gedai_aasd_gate_inner_splits", 3))
+                        X_base_eval = (
+                            aasd_baseline_cache[:, eval_ch_idx, :]
+                            if eval_ch_idx is not None
+                            else aasd_baseline_cache
+                        )
+                        aasd_gate_decisions = []
+                        fold_acc = []
+                        fold_auc_vals = []
+                        pooled_c = 0
+                        pooled_t = 0
+                        for fold_i, (train_idx, test_idx) in enumerate(cv_splits):
+                            y_train = y[train_idx]
+                            gate_rs = int(cfg.cv.random_state) + int(sid) * 1009 + fold_i
+                            train_groups = (
+                                np.asarray(aasd_groups)[train_idx]
+                                if aasd_groups is not None
+                                else None
+                            )
+                            X_gedai_fold = (
+                                aasd_perfold_X_eval[fold_i]
+                                if aasd_perfold_X_eval is not None
+                                else X_eval
+                            )
+                            if aasd_gate_enabled:
+                                base_score = _score_transformer_inner_cv(
+                                    X_proc=X_base_eval[train_idx],
+                                    y=y_train,
+                                    sfreq=subj_data.sfreq,
+                                    target_sfreq=getattr(cfg.backbones, "transformer_target_sfreq", None),
+                                    n_splits=inner_splits,
+                                    random_state=gate_rs,
+                                    groups=train_groups,
+                                )
+                                gedai_score = _score_transformer_inner_cv(
+                                    X_proc=X_gedai_fold[train_idx],
+                                    y=y_train,
+                                    sfreq=subj_data.sfreq,
+                                    target_sfreq=getattr(cfg.backbones, "transformer_target_sfreq", None),
+                                    n_splits=inner_splits,
+                                    random_state=gate_rs,
+                                    groups=train_groups,
+                                )
+                                use_gedai_fold = gedai_score >= (base_score + gate_margin)
+                                choice = "gedai" if use_gedai_fold else "baseline"
+                                log.info(
+                                    "  Subject %s | transformer | aasd gate | fold=%d "
+                                    "baseline_train_cv=%.3f gedai_train_cv=%.3f margin=%.3f "
+                                    "choice=%s",
+                                    sid, fold_i, base_score, gedai_score, gate_margin, choice,
+                                )
+                            else:
+                                # Per-fold leakage-safe refcov without the gate:
+                                # always trust GEDAI, but cleanly per fold.
+                                use_gedai_fold = True
+                                choice = "gedai"
+                                log.info(
+                                    "  Subject %s | transformer | aasd perfold-refcov | "
+                                    "fold=%d (gate disabled, using GEDAI)",
+                                    sid, fold_i,
+                                )
+                            aasd_gate_decisions.append(choice)
+                            src = X_gedai_fold if use_gedai_fold else X_base_eval
+                            X_train_f = src[train_idx]
+                            X_test_f = src[test_idx]
+                            X_both = np.concatenate([X_train_f, X_test_f], axis=0)
+                            y_both = np.concatenate([y_train, y[test_idx]], axis=0)
+                            tr = np.arange(len(y_train))
+                            te = np.arange(len(y_train), len(y_both))
+                            sub_groups = None
+                            if aasd_groups is not None:
+                                g_tr = np.asarray(aasd_groups)[train_idx]
+                                g_te = np.asarray(aasd_groups)[test_idx]
+                                sub_groups = np.concatenate([g_tr, g_te], axis=0)
+                            sub_res = run_transformer_cv_preprocessed(
+                                X_proc=X_both,
+                                y=y_both,
+                                cv_splits=[(tr, te)],
+                                sfreq=subj_data.sfreq,
+                                target_sfreq=getattr(cfg.backbones, "transformer_target_sfreq", None),
+                                epochs=int(getattr(cfg.backbones, "transformer_epochs", 50)),
+                                batch_size=int(getattr(cfg.backbones, "transformer_batch_size", 16)),
+                                learning_rate=float(getattr(cfg.backbones, "transformer_learning_rate", 1e-4)),
+                                weight_decay=float(getattr(cfg.backbones, "transformer_weight_decay", 1e-4)),
+                                dropout=float(getattr(cfg.backbones, "transformer_dropout", 0.3)),
+                                d_model=int(getattr(cfg.backbones, "transformer_d_model", 256)),
+                                n_heads=int(getattr(cfg.backbones, "transformer_n_heads", 8)),
+                                n_layers=int(getattr(cfg.backbones, "transformer_n_layers", 4)),
+                                ff_dim=int(getattr(cfg.backbones, "transformer_ff_dim", 256)),
+                                val_fraction=float(getattr(cfg.backbones, "transformer_val_fraction", 0.125)),
+                                patience=int(getattr(cfg.backbones, "transformer_patience", 5)),
+                                device=str(getattr(cfg.backbones, "transformer_device", "cpu")),
+                                random_state=int(cfg.cv.random_state) + int(sid) * 1009 + fold_i,
+                                groups=sub_groups,
+                                paper_exact=bool(getattr(cfg.backbones, "transformer_paper_exact", False)),
+                            )
+                            fold_acc.extend(sub_res.fold_accuracies)
+                            fold_auc_vals.extend(getattr(sub_res, "fold_aucs", []))
+                            pooled_c += int(sub_res.pooled_test_correct)
+                            pooled_t += int(sub_res.pooled_test_total)
+                        res = None
+                        mean_acc = float(np.mean(fold_acc))
+                        std_acc = float(np.std(fold_acc, ddof=1)) if len(fold_acc) > 1 else 0.0
+                    else:
+                        res = run_transformer_cv_preprocessed(
+                            X_proc=X_eval,
+                            y=y,
+                            cv_splits=cv_splits,
+                            sfreq=subj_data.sfreq,
+                            target_sfreq=getattr(cfg.backbones, "transformer_target_sfreq", None),
+                            epochs=int(getattr(cfg.backbones, "transformer_epochs", 50)),
+                            batch_size=int(getattr(cfg.backbones, "transformer_batch_size", 16)),
+                            learning_rate=float(getattr(cfg.backbones, "transformer_learning_rate", 1e-4)),
+                            weight_decay=float(getattr(cfg.backbones, "transformer_weight_decay", 1e-4)),
+                            dropout=float(getattr(cfg.backbones, "transformer_dropout", 0.3)),
+                            d_model=int(getattr(cfg.backbones, "transformer_d_model", 256)),
+                            n_heads=int(getattr(cfg.backbones, "transformer_n_heads", 8)),
+                            n_layers=int(getattr(cfg.backbones, "transformer_n_layers", 4)),
+                            ff_dim=int(getattr(cfg.backbones, "transformer_ff_dim", 256)),
+                            val_fraction=float(getattr(cfg.backbones, "transformer_val_fraction", 0.125)),
+                            patience=int(getattr(cfg.backbones, "transformer_patience", 5)),
+                            device=str(getattr(cfg.backbones, "transformer_device", "cpu")),
+                            random_state=int(cfg.cv.random_state) + int(sid) * 1009,
+                            groups=aasd_groups,
+                            paper_exact=bool(getattr(cfg.backbones, "transformer_paper_exact", False)),
+                        )
+                        fold_acc = list(res.fold_accuracies)
+                        fold_auc_vals = list(getattr(res, "fold_aucs", []))
+                        mean_acc = float(np.mean(fold_acc))
+                        std_acc = float(np.std(fold_acc, ddof=1))
+                        pooled_c = int(res.pooled_test_correct)
+                        pooled_t = int(res.pooled_test_total)
+                else:
+                    raise ValueError(f"Unsupported backbone: {backbone}")
 
                 if backbone == "csp":
                     mean_acc = float(np.mean(fold_acc))
@@ -840,11 +1193,34 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 cv_splits=cv_splits,
                                 fold_features=tangent_fold_features,
                             )
-                        else:
+                        elif backbone == "time_lda":
                             nres = run_time_lda_cv_precomputed_features(
                                 y=y_shuffled,
                                 cv_splits=cv_splits,
                                 fold_features=time_lda_fold_features,
+                            )
+                        else:
+                            nres = run_transformer_cv_preprocessed(
+                                X_proc=X_eval,
+                                y=y_shuffled,
+                                cv_splits=cv_splits,
+                                sfreq=subj_data.sfreq,
+                                target_sfreq=getattr(cfg.backbones, "transformer_target_sfreq", None),
+                                epochs=int(getattr(cfg.backbones, "transformer_epochs", 50)),
+                                batch_size=int(getattr(cfg.backbones, "transformer_batch_size", 16)),
+                                learning_rate=float(getattr(cfg.backbones, "transformer_learning_rate", 1e-4)),
+                                weight_decay=float(getattr(cfg.backbones, "transformer_weight_decay", 1e-4)),
+                                dropout=float(getattr(cfg.backbones, "transformer_dropout", 0.3)),
+                                d_model=int(getattr(cfg.backbones, "transformer_d_model", 256)),
+                                n_heads=int(getattr(cfg.backbones, "transformer_n_heads", 8)),
+                                n_layers=int(getattr(cfg.backbones, "transformer_n_layers", 4)),
+                                ff_dim=int(getattr(cfg.backbones, "transformer_ff_dim", 256)),
+                                val_fraction=float(getattr(cfg.backbones, "transformer_val_fraction", 0.125)),
+                                patience=int(getattr(cfg.backbones, "transformer_patience", 5)),
+                                device=str(getattr(cfg.backbones, "transformer_device", "cpu")),
+                                random_state=int(cfg.cv.random_state) + int(sid) * 1009,
+                                groups=aasd_groups,
+                                paper_exact=bool(getattr(cfg.backbones, "transformer_paper_exact", False)),
                             )
                         null_acc.append(float(np.mean(nres.fold_accuracies)))
                         del nres
@@ -969,7 +1345,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 h_freq=cfg.bandpass.h_freq,
                                 denoising=pipeline,
                             )
-                        else:
+                        elif backbone == "time_lda":
                             model = fit_time_lda_model_preprocessed(
                                 X_proc=X_eval if X_eval is not None else np.concatenate([a for a, _ in fold_X_eval], axis=0),
                                 y=y,
@@ -979,6 +1355,28 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 h_freq=cfg.bandpass.h_freq,
                                 denoising=pipeline,
                                 target_sfreq=getattr(cfg.backbones, "time_lda_target_sfreq", None),
+                            )
+                        else:
+                            model = fit_transformer_model_preprocessed(
+                                X_proc=X_eval if X_eval is not None else np.concatenate([a for a, _ in fold_X_eval], axis=0),
+                                y=y,
+                                sfreq=subj_data.sfreq,
+                                ch_names=eval_ch_names,
+                                l_freq=cfg.bandpass.l_freq,
+                                h_freq=cfg.bandpass.h_freq,
+                                denoising=pipeline,
+                                target_sfreq=getattr(cfg.backbones, "transformer_target_sfreq", None),
+                                epochs=int(getattr(cfg.backbones, "transformer_epochs", 50)),
+                                batch_size=int(getattr(cfg.backbones, "transformer_batch_size", 16)),
+                                learning_rate=float(getattr(cfg.backbones, "transformer_learning_rate", 1e-4)),
+                                weight_decay=float(getattr(cfg.backbones, "transformer_weight_decay", 1e-4)),
+                                dropout=float(getattr(cfg.backbones, "transformer_dropout", 0.3)),
+                                d_model=int(getattr(cfg.backbones, "transformer_d_model", 256)),
+                                n_heads=int(getattr(cfg.backbones, "transformer_n_heads", 8)),
+                                n_layers=int(getattr(cfg.backbones, "transformer_n_layers", 4)),
+                                ff_dim=int(getattr(cfg.backbones, "transformer_ff_dim", 256)),
+                                device=str(getattr(cfg.backbones, "transformer_device", "cpu")),
+                                random_state=int(cfg.cv.random_state) + int(sid) * 1009,
                             )
                         path = models_dir / f"subject_{sid}_{backbone}_{pipeline}.joblib"
                         joblib.dump(model, path)

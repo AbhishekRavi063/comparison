@@ -53,9 +53,29 @@ class BackboneConfig:
     use_csp: bool
     use_tangent_space: bool
     use_time_lda: bool = False
+    use_transformer: bool = False
     # Optional feature decimation target for time-domain LDA.
     # None (or <=0) keeps native sampling rate.
     time_lda_target_sfreq: float | None = None
+    transformer_target_sfreq: float | None = None
+    transformer_epochs: int = 50
+    transformer_batch_size: int = 16
+    transformer_learning_rate: float = 1e-4
+    transformer_weight_decay: float = 1e-4
+    transformer_dropout: float = 0.3
+    transformer_d_model: int = 256
+    transformer_n_heads: int = 8
+    transformer_n_layers: int = 4
+    transformer_ff_dim: int = 256
+    transformer_val_fraction: float = 0.125
+    transformer_patience: int = 5
+    transformer_device: str = "cpu"
+    # Paper-exact training mode for the AASD Transformer: switches off the
+    # comparison's training improvements (AdamW, cosine LR, augmentation,
+    # gradient clipping) so the configuration matches the AASD paper's
+    # description (Adam, no scheduler, no augmentation). Use this for the
+    # cleanest "GEDAI improves the published model" head-to-head.
+    transformer_paper_exact: bool = False
     # CSP filters are defined for binary classification; default to skipping CSP
     # when labels are multi-class unless explicitly enabled.
     allow_csp_multiclass: bool = False
@@ -106,6 +126,17 @@ class DenoisingConfig:
     # This is the professor's simple version — more stable estimate with double
     # the trials. Mild spatial-filter leakage, much lower variance.
     gedai_mrcp_refcov_all_trials: bool = False
+    # AASD/Transformer leakage-safe gate: per outer fold, pick the better of
+    # {baseline, gedai} using inner-CV on training data only. Prevents GEDAI
+    # from hurting subjects where the denoiser is detrimental.
+    gedai_aasd_adaptive_gate: bool = False
+    gedai_aasd_gate_margin: float = 0.0
+    gedai_aasd_gate_inner_splits: int = 3
+    # AASD per-fold leakage-safe reference covariance: when True, recompute
+    # the CSP-style refcov for each outer CV fold using only that fold's
+    # training trials. The published claim becomes airtight because no test
+    # labels touch the GEDAI spatial filter direction.
+    gedai_aasd_perfold_refcov: bool = False
     # Anti-Laplacian spatial filter (Reyes-Jiménez et al., Data in Brief 65, 2026 §4.5).
     # The dataset authors validated MRCP extraction using: CAR → Anti-Laplacian → 0.1–1 Hz.
     # Formula: VL(i) = V(i) + (1/N) * sum_{j ∈ neighbors(i)} V(j)
@@ -204,6 +235,18 @@ class ExperimentConfig:
             ),
             anti_laplacian_n_neighbors=int(
                 denoising_cfg.get("anti_laplacian_n_neighbors", 4)
+            ),
+            gedai_aasd_adaptive_gate=bool(
+                denoising_cfg.get("gedai_aasd_adaptive_gate", False)
+            ),
+            gedai_aasd_gate_margin=float(
+                denoising_cfg.get("gedai_aasd_gate_margin", 0.0)
+            ),
+            gedai_aasd_gate_inner_splits=int(
+                denoising_cfg.get("gedai_aasd_gate_inner_splits", 3)
+            ),
+            gedai_aasd_perfold_refcov=bool(
+                denoising_cfg.get("gedai_aasd_perfold_refcov", False)
             ),
         )
 

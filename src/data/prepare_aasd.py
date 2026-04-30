@@ -17,8 +17,10 @@ Expected folder layout (processed MAT files)::
       ...
 
 Each MAT file contains one subject's processed EEG.  The converter windows
-each 60-second trial into non-overlapping 1-second epochs, assigns the
-trial-level attention label (left=0, right=1) to every window, and saves::
+each 60-second trial into non-overlapping epochs and, when available, assigns
+the time-varying attention label from within-trial switch events to each
+window.  If dynamic events are unavailable it falls back to one trial-level
+label per 60-second trial.
 
     <out-root>/subject_<ID>.npz
 
@@ -137,6 +139,27 @@ def _find_subject_file(raw_root: Path, subject: int) -> Path:
         f"{[str(f) for f in subfolder_patterns]}\n"
         f"Place MAT files in {raw_root} or a numbered sub-folder."
     )
+
+
+def _resolve_raw_root(raw_root: Path) -> Path:
+    """Resolve raw root and fall back to common AASD dataset folders."""
+    if raw_root.exists():
+        return raw_root
+
+    cwd = Path.cwd()
+    candidates = [
+        cwd / "data" / "Processed EEG",
+        cwd / "data" / "processed",
+        cwd / "data" / "aasd" / "processed",
+        cwd / "Processed EEG",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            warnings.warn(
+                f"Raw root '{raw_root}' does not exist; using '{candidate}' instead."
+            )
+            return candidate
+    return raw_root
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +311,81 @@ def _extract_labels_from_eeg_new_event(event_obj, n_trials: int, subject: int) -
             f"Subject {subject}: failed EEG_new event-label parsing ({exc}); defaulting to 0."
         )
         return np.zeros(n_trials, dtype=int)
+
+
+def _extract_window_labels_from_eeg_new_event(
+    event_obj,
+    *,
+    n_trials: int,
+    n_times: int,
+    sfreq: float,
+    window_s: float,
+    subject: int,
+) -> Optional[np.ndarray]:
+    """Build per-window labels from AASD within-trial switch markers.
+
+    The AASD ``EEG_new.event`` matrix uses recurrent event codes during each
+    60-second trial.  In the public files these are commonly 179 and 184, which
+    encode the current left/right attention state.  We label every window by the
+    latest switch marker at that window midpoint.  If a file does not expose the
+    expected event matrix, callers should fall back to trial-level labels.
+    """
+    if event_obj is None:
+        return None
+    try:
+        ev = np.asarray(event_obj)
+        if ev.ndim != 2 or ev.shape[1] < 5:
+            return None
+        code_vals = np.array([int(float(str(v))) for v in ev[:, 0]], dtype=int)
+        lat_vals = np.array([float(str(v)) for v in ev[:, 1]], dtype=float)
+        trial_ids = np.array([int(float(str(v))) for v in ev[:, 4]], dtype=int)
+        state_code_to_label = {179: 0, 184: 1}
+        n_windows = int(n_times // int(round(float(sfreq) * float(window_s))))
+        if n_windows <= 0:
+            return None
+        labels = np.empty((n_trials, n_windows), dtype=int)
+        trial_fallback = _extract_labels_from_eeg_new_event(event_obj, n_trials, subject)
+
+        for trial_i in range(n_trials):
+            trial_num = trial_i + 1
+            rows = np.flatnonzero(trial_ids == trial_num)
+            if rows.size == 0:
+                labels[trial_i, :] = int(trial_fallback[trial_i])
+                continue
+            state_rows = [
+                r for r in rows.tolist() if int(code_vals[r]) in state_code_to_label
+            ]
+            if not state_rows:
+                labels[trial_i, :] = int(trial_fallback[trial_i])
+                continue
+
+            lats = lat_vals[state_rows].astype(float)
+            # Latencies may be within-trial samples or continuous/absolute samples.
+            # Convert robustly to 0-based samples relative to this trial.
+            if np.nanmax(lats) > n_times + 1:
+                rel_lats = lats - np.nanmin(lat_vals[rows])
+            else:
+                rel_lats = lats - 1.0  # MATLAB-style 1-based sample index
+            order = np.argsort(rel_lats)
+            rel_lats = rel_lats[order]
+            state_labels = np.array(
+                [state_code_to_label[int(code_vals[state_rows[j]])] for j in order],
+                dtype=int,
+            )
+            labels[trial_i, :] = int(state_labels[0])
+            win_samples = int(round(float(sfreq) * float(window_s)))
+            for win_i in range(n_windows):
+                midpoint = (win_i + 0.5) * win_samples
+                state_idx = int(np.searchsorted(rel_lats, midpoint, side="right") - 1)
+                if state_idx >= 0:
+                    labels[trial_i, win_i] = int(state_labels[state_idx])
+        return labels
+    except Exception as exc:
+        warnings.warn(
+            f"Subject {subject}: failed dynamic EEG_new event-label parsing ({exc}); "
+            "falling back to trial-level labels."
+        )
+        return None
 
 
 def _extract_eeglab_struct(eeg, subject: int) -> Tuple[np.ndarray, np.ndarray, float, List[str]]:
@@ -526,7 +624,7 @@ def _window_trials(
     Parameters
     ----------
     data   : (n_trials, n_channels, n_times)
-    labels : (n_trials,)
+    labels : (n_trials,) or (n_trials, n_windows_per_trial)
     sfreq  : sampling rate
     window_s : window length in seconds
 
@@ -548,12 +646,20 @@ def _window_trials(
 
     X_parts = []
     y_parts = []
+    labels_arr = np.asarray(labels)
+    dynamic_labels = labels_arr.ndim == 2
+    if dynamic_labels and labels_arr.shape != (n_trials, n_windows_per_trial):
+        raise ValueError(
+            f"Dynamic labels shape {labels_arr.shape} does not match "
+            f"(n_trials={n_trials}, n_windows={n_windows_per_trial})."
+        )
+
     for t in range(n_trials):
         for w in range(n_windows_per_trial):
             start = w * win_samples
             end = start + win_samples
             X_parts.append(data[t, :, start:end])
-            y_parts.append(labels[t])
+            y_parts.append(labels_arr[t, w] if dynamic_labels else labels_arr[t])
 
     X_win = np.stack(X_parts, axis=0).astype(np.float32)
     y_win = np.array(y_parts, dtype=int)
@@ -601,8 +707,12 @@ def prepare_subject(
     # Load data
     if path.suffix.lower() == ".cnt":
         data, labels, sfreq, ch_names = _load_cnt_subject(path, subject)
+        eeg_new_event = None
     else:
         mat = _load_mat(path)
+        eeg_new_event = (
+            getattr(mat["EEG_new"], "event", None) if "EEG_new" in mat else None
+        )
         data, labels, sfreq, ch_names = _extract_eeg_data(mat, subject)
         del mat
         gc.collect()
@@ -629,10 +739,26 @@ def prepare_subject(
     data = _resample(data, sfreq, target_sfreq, ch_names)
     sfreq_out = target_sfreq if abs(sfreq - target_sfreq) >= 1.0 else sfreq
 
+    # For EEG_new files, prefer time-varying attention labels from recurrent
+    # switch markers.  This matches the paper's Transformer target more closely
+    # than assigning one label to an entire 60-second trial.
+    if eeg_new_event is not None:
+        dyn_labels = _extract_window_labels_from_eeg_new_event(
+            eeg_new_event,
+            n_trials=int(data.shape[0]),
+            n_times=int(data.shape[2]),
+            sfreq=float(sfreq_out),
+            window_s=float(window_s),
+            subject=subject,
+        )
+        if dyn_labels is not None:
+            labels = dyn_labels
+
     # Window into 1s epochs
     X, y = _window_trials(data, labels, sfreq_out, window_s=window_s)
     del data
     gc.collect()
+    unique_y = np.unique(y)
 
     # Save
     out_path = out_root / f"subject_{subject}.npz"
@@ -688,7 +814,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    raw_root = Path(args.raw_root)
+    raw_root = _resolve_raw_root(Path(args.raw_root))
     out_root = Path(args.out_root)
 
     print(f"AASD converter: {len(args.subjects)} subject(s) | "

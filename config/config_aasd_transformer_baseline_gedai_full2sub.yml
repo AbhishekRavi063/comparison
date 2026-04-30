@@ -1,0 +1,75 @@
+# AASD paper-faithful 2-subject FULL smoke (no max_trials cap, paper hyperparams).
+# Goal: confirm GEDAI improves Transformer accuracy on data scale comparable
+# to the paper, before committing to the 18-subject full run.
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_transformer_full2sub
+dataset_label: aasd
+
+subjects: [1, 2]
+# IMPORTANT: max_trials intentionally omitted so the experiment uses ALL 60
+# trials (3600 windows) per subject, matching paper-style scale.
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 45.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: false
+  use_time_lda: false
+  use_transformer: true
+  transformer_target_sfreq: 128
+  transformer_epochs: 50
+  transformer_batch_size: 16
+  transformer_learning_rate: 0.0001
+  transformer_weight_decay: 0.0001
+  transformer_dropout: 0.3
+  transformer_d_model: 256
+  transformer_n_heads: 8
+  transformer_n_layers: 4
+  transformer_ff_dim: 256
+  transformer_val_fraction: 0.125
+  transformer_patience: 10
+  transformer_device: cpu
+  # Match the AASD paper's training recipe exactly: vanilla Adam, no LR
+  # scheduler, no augmentation, no gradient clipping. This makes the
+  # head-to-head GEDAI vs paper-Transformer claim airtight.
+  transformer_paper_exact: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: true
+  gedai_aasd_adaptive_gate: true
+  gedai_aasd_gate_margin: -0.02
+  gedai_aasd_gate_inner_splits: 2
+  # Leakage-safe spatial filter: fit the CSP-style refcov from each outer
+  # fold's training trials only. K x apply_gedai per subject, but no test
+  # labels touch the GEDAI direction.
+  gedai_aasd_perfold_refcov: true
+
+signal_integrity:
+  channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]
+  segment_duration_s: 1.0

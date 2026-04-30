@@ -1,0 +1,49 @@
+# AASD paper-matched smoke run — baseline vs GEDAI only.
+# Uses complete 60-window trials so GEDAI still sees coherent trial structure.
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_paper_baseline_gedai_smoke
+dataset_label: aasd
+
+subjects: [1]
+max_trials: 240
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 45.0
+
+cv:
+  n_splits: 2
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: false
+  use_time_lda: true
+  time_lda_target_sfreq: 128
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: true
+
+signal_integrity:
+  channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]
+  segment_duration_s: 1.0

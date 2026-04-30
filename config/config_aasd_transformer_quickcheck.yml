@@ -1,0 +1,70 @@
+# Quick-check config: same code paths as full2sub (paper-faithful Transformer
+# architecture, leakage-safe gate, augmentation, refcov), but tiny data so the
+# whole pipeline finishes in a few minutes. Used to validate that the code
+# runs end-to-end without crashes before launching the heavy run on a remote
+# machine.
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_transformer_quickcheck
+dataset_label: aasd
+
+subjects: [1, 2]
+max_trials: 600
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 45.0
+
+cv:
+  n_splits: 2
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: false
+  use_time_lda: false
+  use_transformer: true
+  transformer_target_sfreq: 128
+  transformer_epochs: 3
+  transformer_batch_size: 32
+  transformer_learning_rate: 0.0005
+  transformer_weight_decay: 0.001
+  transformer_dropout: 0.3
+  transformer_d_model: 256
+  transformer_n_heads: 8
+  transformer_n_layers: 4
+  transformer_ff_dim: 256
+  transformer_val_fraction: 0.15
+  transformer_patience: 2
+  transformer_device: cpu
+  transformer_paper_exact: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: true
+  gedai_aasd_adaptive_gate: true
+  gedai_aasd_gate_margin: -0.02
+  gedai_aasd_gate_inner_splits: 2
+  gedai_aasd_perfold_refcov: true
+
+signal_integrity:
+  channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]
+  segment_duration_s: 1.0
