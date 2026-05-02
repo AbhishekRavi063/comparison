@@ -18,6 +18,10 @@ class CVConfig:
     n_splits: int
     shuffle: bool
     random_state: int
+    # Merge adjacent same-label 1s AASD windows into 2s windows before training.
+    # Discards pairs where labels differ. Matches paper's 2s decision window (71.23% reported).
+    aasd_merge_to_2s: bool = False
+    aasd_group_trials: bool = True
 
 
 @dataclass
@@ -76,6 +80,46 @@ class BackboneConfig:
     # description (Adam, no scheduler, no augmentation). Use this for the
     # cleanest "GEDAI improves the published model" head-to-head.
     transformer_paper_exact: bool = False
+    # Transformer architecture flags for paper_exact mode.
+    # norm_first=False (post-norm) and activation=relu match the original paper's
+    # standard Transformer encoder description.
+    transformer_norm_first: bool = False
+    transformer_activation: str = "relu"
+
+    # EEGNet (Lawhern et al. 2018)
+    use_eegnet: bool = False
+    eegnet_target_sfreq: float | None = None
+    eegnet_epochs: int = 50
+    eegnet_batch_size: int = 16
+    eegnet_learning_rate: float = 1e-4
+    eegnet_weight_decay: float = 1e-4
+    eegnet_dropout: float = 0.25
+    eegnet_F1: int = 8
+    eegnet_D: int = 2
+    eegnet_F2: int = 16
+    eegnet_kernel_length: int | None = None
+    eegnet_val_fraction: float = 0.111
+    eegnet_patience: int = 10
+    eegnet_device: str = "cpu"
+    eegnet_paper_exact: bool = False
+
+    # ShallowConvNet (Schirrmeister et al. 2017)
+    use_shallow_convnet: bool = False
+    shallow_target_sfreq: float | None = None
+    shallow_epochs: int = 50
+    shallow_batch_size: int = 16
+    shallow_learning_rate: float = 1e-4
+    shallow_weight_decay: float = 1e-4
+    shallow_dropout: float = 0.5
+    shallow_n_temporal_filters: int = 40
+    shallow_temporal_kernel: int = 25
+    shallow_pool_size: int = 75
+    shallow_pool_stride: int = 15
+    shallow_val_fraction: float = 0.111
+    shallow_patience: int = 10
+    shallow_device: str = "cpu"
+    shallow_paper_exact: bool = False
+
     # CSP filters are defined for binary classification; default to skipping CSP
     # when labels are multi-class unless explicitly enabled.
     allow_csp_multiclass: bool = False

@@ -1,0 +1,105 @@
+# Paper-calibrated multi-model comparison on 2 subjects (S01, S02).
+# All three DL models use the AASD paper's exact training protocol:
+#   Adam, lr=0.0001, batch=16, 50 epochs, dropout=0.3/0.25/0.5,
+#   weight_decay=0.0001, 5-fold trial-grouped CV (paper 8:1:1 split).
+# Run on all 18 subjects once 2-subject validation passes.
+data_root: /Users/abhishekr/Documents/EEG/comparison/data/aasd/npz
+results_root: ./results/aasd_multimodel_paper_2sub
+dataset_label: aasd
+
+subjects: [1, 2]
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 45.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  aasd_group_trials: true
+  aasd_merge_to_2s: true
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: false
+  use_time_lda: false
+
+  # --- Transformer (paper spec) ---
+  use_transformer: true
+  transformer_target_sfreq: 128
+  transformer_epochs: 50
+  transformer_batch_size: 16
+  transformer_learning_rate: 0.0001
+  transformer_weight_decay: 0.0001
+  transformer_dropout: 0.3
+  transformer_d_model: 256
+  transformer_n_heads: 8
+  transformer_n_layers: 4
+  transformer_ff_dim: 256
+  transformer_val_fraction: 0.111   # 1/9 ≈ paper 8:1:1 split
+  transformer_patience: 10
+  transformer_device: cpu
+  transformer_paper_exact: true
+  transformer_norm_first: false     # post-norm (standard Transformer)
+  transformer_activation: relu
+
+  # --- EEGNet (paper-calibrated) ---
+  use_eegnet: true
+  eegnet_target_sfreq: 128
+  eegnet_epochs: 50
+  eegnet_batch_size: 16
+  eegnet_learning_rate: 0.0001
+  eegnet_weight_decay: 0.0001
+  eegnet_dropout: 0.25
+  eegnet_F1: 8
+  eegnet_D: 2
+  eegnet_F2: 16
+  eegnet_val_fraction: 0.111
+  eegnet_kernel_length: 128
+  eegnet_patience: 10
+  eegnet_device: cpu
+  eegnet_paper_exact: true
+
+  # --- ShallowConvNet (paper-calibrated) ---
+  use_shallow_convnet: true
+  shallow_target_sfreq: 128
+  shallow_epochs: 50
+  shallow_batch_size: 16
+  shallow_learning_rate: 0.0001
+  shallow_weight_decay: 0.0001
+  shallow_dropout: 0.5
+  shallow_n_temporal_filters: 40
+  shallow_temporal_kernel: 25
+  shallow_pool_size: 75
+  shallow_pool_stride: 15
+  shallow_val_fraction: 0.111
+  shallow_patience: 10
+  shallow_device: cpu
+  shallow_paper_exact: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: false
+
+signal_integrity:
+  channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]
+  segment_duration_s: 1.0

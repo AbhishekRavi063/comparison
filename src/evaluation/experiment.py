@@ -231,6 +231,8 @@ from ..backbones.transformer_eeg import (
     run_transformer_cv_preprocessed,
     fit_transformer_model_preprocessed,
 )
+from ..backbones.eegnet_eeg import run_eegnet_cv_preprocessed
+from ..backbones.shallow_convnet import run_shallow_convnet_cv_preprocessed
 from ..denoising.pipelines import MRCP_MOTOR_CHANNELS, preprocess_subject_data
 from ..data.dataset_noise_inspection import (
     plot_denoising_comparison_overlay,
@@ -336,6 +338,38 @@ def _aasd_window_groups(
     ):
         return np.arange(int(X.shape[0]), dtype=int) // 60
     return None
+
+
+def _merge_to_2s_windows(
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: "np.ndarray | None",
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray | None]":
+    """Merge adjacent same-label 1s windows (128 samples) into 2s windows (256 samples).
+
+    Only merges pairs where both windows belong to the same original trial AND
+    share the same label. Discards any unmatched or label-mismatched windows.
+    Returns (X_2s, y_2s, groups_2s).
+    """
+    n = len(y)
+    new_X, new_y, new_g = [], [], []
+    i = 0
+    while i < n - 1:
+        same_trial = (groups is None) or (int(groups[i]) == int(groups[i + 1]))
+        if same_trial and int(y[i]) == int(y[i + 1]):
+            new_X.append(np.concatenate([X[i], X[i + 1]], axis=-1))
+            new_y.append(int(y[i]))
+            if groups is not None:
+                new_g.append(int(groups[i]))
+            i += 2
+        else:
+            i += 1
+    if not new_X:
+        return X, y, groups
+    X2 = np.stack(new_X, axis=0).astype(X.dtype, copy=False)
+    y2 = np.array(new_y, dtype=y.dtype)
+    g2 = np.array(new_g, dtype=groups.dtype) if groups is not None else None
+    return X2, y2, g2
 
 
 def _is_borderline_p_value(p_value: float, cfg: ExperimentConfig) -> bool:
@@ -518,6 +552,10 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         backbones.append("time_lda")
     if getattr(cfg.backbones, "use_transformer", False):
         backbones.append("transformer")
+    if getattr(cfg.backbones, "use_eegnet", False):
+        backbones.append("eegnet")
+    if getattr(cfg.backbones, "use_shallow_convnet", False):
+        backbones.append("shallow_convnet")
 
     log = logging.getLogger("run_full_test")
     n_subj = len(cfg.subjects)
@@ -558,6 +596,15 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
             )
         cv_splits = _build_cv_splits(X, y, cfg)
         aasd_groups = _aasd_window_groups(X, cfg)
+
+        # Optionally merge adjacent same-label 1s windows → 2s windows.
+        if getattr(cfg.cv, "aasd_merge_to_2s", False) and aasd_groups is not None:
+            X, y, aasd_groups = _merge_to_2s_windows(X, y, aasd_groups)
+            cv_splits = _build_cv_splits(X, y, cfg)
+            log.info(
+                f"  Subject {sid}: merged to 2s windows → {X.shape[0]} windows "
+                f"({X.shape[-1]} samples each)"
+            )
 
         # Pipeline order: baseline and ICALabel first, then GEDAI.
         mrcp_baseline_cache = None
@@ -1100,6 +1147,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 random_state=int(cfg.cv.random_state) + int(sid) * 1009 + fold_i,
                                 groups=sub_groups,
                                 paper_exact=bool(getattr(cfg.backbones, "transformer_paper_exact", False)),
+                                norm_first=bool(getattr(cfg.backbones, "transformer_norm_first", False)),
+                                activation=str(getattr(cfg.backbones, "transformer_activation", "relu")),
                             )
                             fold_acc.extend(sub_res.fold_accuracies)
                             fold_auc_vals.extend(getattr(sub_res, "fold_aucs", []))
@@ -1130,6 +1179,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                             random_state=int(cfg.cv.random_state) + int(sid) * 1009,
                             groups=aasd_groups,
                             paper_exact=bool(getattr(cfg.backbones, "transformer_paper_exact", False)),
+                            norm_first=bool(getattr(cfg.backbones, "transformer_norm_first", False)),
+                            activation=str(getattr(cfg.backbones, "transformer_activation", "relu")),
                         )
                         fold_acc = list(res.fold_accuracies)
                         fold_auc_vals = list(getattr(res, "fold_aucs", []))
@@ -1137,6 +1188,64 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         std_acc = float(np.std(fold_acc, ddof=1))
                         pooled_c = int(res.pooled_test_correct)
                         pooled_t = int(res.pooled_test_total)
+                elif backbone == "eegnet":
+                    res = run_eegnet_cv_preprocessed(
+                        X_proc=X_eval,
+                        y=y,
+                        cv_splits=cv_splits,
+                        sfreq=subj_data.sfreq,
+                        target_sfreq=getattr(cfg.backbones, "eegnet_target_sfreq", None),
+                        epochs=int(getattr(cfg.backbones, "eegnet_epochs", 50)),
+                        batch_size=int(getattr(cfg.backbones, "eegnet_batch_size", 16)),
+                        learning_rate=float(getattr(cfg.backbones, "eegnet_learning_rate", 1e-4)),
+                        weight_decay=float(getattr(cfg.backbones, "eegnet_weight_decay", 1e-4)),
+                        dropout=float(getattr(cfg.backbones, "eegnet_dropout", 0.25)),
+                        F1=int(getattr(cfg.backbones, "eegnet_F1", 8)),
+                        D=int(getattr(cfg.backbones, "eegnet_D", 2)),
+                        F2=int(getattr(cfg.backbones, "eegnet_F2", 16)),
+                        kernel_length=getattr(cfg.backbones, "eegnet_kernel_length", None),
+                        val_fraction=float(getattr(cfg.backbones, "eegnet_val_fraction", 0.111)),
+                        patience=int(getattr(cfg.backbones, "eegnet_patience", 10)),
+                        device=str(getattr(cfg.backbones, "eegnet_device", "cpu")),
+                        random_state=int(cfg.cv.random_state) + int(sid) * 1009,
+                        groups=aasd_groups,
+                        paper_exact=bool(getattr(cfg.backbones, "eegnet_paper_exact", False)),
+                    )
+                    fold_acc = list(res.fold_accuracies)
+                    fold_auc_vals = list(getattr(res, "fold_aucs", []))
+                    mean_acc = float(np.mean(fold_acc))
+                    std_acc = float(np.std(fold_acc, ddof=1))
+                    pooled_c = int(res.pooled_test_correct)
+                    pooled_t = int(res.pooled_test_total)
+                elif backbone == "shallow_convnet":
+                    res = run_shallow_convnet_cv_preprocessed(
+                        X_proc=X_eval,
+                        y=y,
+                        cv_splits=cv_splits,
+                        sfreq=subj_data.sfreq,
+                        target_sfreq=getattr(cfg.backbones, "shallow_target_sfreq", None),
+                        epochs=int(getattr(cfg.backbones, "shallow_epochs", 50)),
+                        batch_size=int(getattr(cfg.backbones, "shallow_batch_size", 16)),
+                        learning_rate=float(getattr(cfg.backbones, "shallow_learning_rate", 1e-4)),
+                        weight_decay=float(getattr(cfg.backbones, "shallow_weight_decay", 1e-4)),
+                        dropout=float(getattr(cfg.backbones, "shallow_dropout", 0.5)),
+                        n_temporal_filters=int(getattr(cfg.backbones, "shallow_n_temporal_filters", 40)),
+                        temporal_kernel=int(getattr(cfg.backbones, "shallow_temporal_kernel", 25)),
+                        pool_size=int(getattr(cfg.backbones, "shallow_pool_size", 75)),
+                        pool_stride=int(getattr(cfg.backbones, "shallow_pool_stride", 15)),
+                        val_fraction=float(getattr(cfg.backbones, "shallow_val_fraction", 0.111)),
+                        patience=int(getattr(cfg.backbones, "shallow_patience", 10)),
+                        device=str(getattr(cfg.backbones, "shallow_device", "cpu")),
+                        random_state=int(cfg.cv.random_state) + int(sid) * 1009,
+                        groups=aasd_groups,
+                        paper_exact=bool(getattr(cfg.backbones, "shallow_paper_exact", False)),
+                    )
+                    fold_acc = list(res.fold_accuracies)
+                    fold_auc_vals = list(getattr(res, "fold_aucs", []))
+                    mean_acc = float(np.mean(fold_acc))
+                    std_acc = float(np.std(fold_acc, ddof=1))
+                    pooled_c = int(res.pooled_test_correct)
+                    pooled_t = int(res.pooled_test_total)
                 else:
                     raise ValueError(f"Unsupported backbone: {backbone}")
 
@@ -1199,6 +1308,52 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 cv_splits=cv_splits,
                                 fold_features=time_lda_fold_features,
                             )
+                        elif backbone == "eegnet":
+                            nres = run_eegnet_cv_preprocessed(
+                                X_proc=X_eval,
+                                y=y_shuffled,
+                                cv_splits=cv_splits,
+                                sfreq=subj_data.sfreq,
+                                target_sfreq=getattr(cfg.backbones, "eegnet_target_sfreq", None),
+                                epochs=int(getattr(cfg.backbones, "eegnet_epochs", 50)),
+                                batch_size=int(getattr(cfg.backbones, "eegnet_batch_size", 16)),
+                                learning_rate=float(getattr(cfg.backbones, "eegnet_learning_rate", 1e-4)),
+                                weight_decay=float(getattr(cfg.backbones, "eegnet_weight_decay", 1e-4)),
+                                dropout=float(getattr(cfg.backbones, "eegnet_dropout", 0.25)),
+                                F1=int(getattr(cfg.backbones, "eegnet_F1", 8)),
+                                D=int(getattr(cfg.backbones, "eegnet_D", 2)),
+                                F2=int(getattr(cfg.backbones, "eegnet_F2", 16)),
+                                kernel_length=getattr(cfg.backbones, "eegnet_kernel_length", None),
+                                val_fraction=float(getattr(cfg.backbones, "eegnet_val_fraction", 0.111)),
+                                patience=int(getattr(cfg.backbones, "eegnet_patience", 10)),
+                                device=str(getattr(cfg.backbones, "eegnet_device", "cpu")),
+                                random_state=int(cfg.cv.random_state) + int(sid) * 1009,
+                                groups=aasd_groups,
+                                paper_exact=bool(getattr(cfg.backbones, "eegnet_paper_exact", False)),
+                            )
+                        elif backbone == "shallow_convnet":
+                            nres = run_shallow_convnet_cv_preprocessed(
+                                X_proc=X_eval,
+                                y=y_shuffled,
+                                cv_splits=cv_splits,
+                                sfreq=subj_data.sfreq,
+                                target_sfreq=getattr(cfg.backbones, "shallow_target_sfreq", None),
+                                epochs=int(getattr(cfg.backbones, "shallow_epochs", 50)),
+                                batch_size=int(getattr(cfg.backbones, "shallow_batch_size", 16)),
+                                learning_rate=float(getattr(cfg.backbones, "shallow_learning_rate", 1e-4)),
+                                weight_decay=float(getattr(cfg.backbones, "shallow_weight_decay", 1e-4)),
+                                dropout=float(getattr(cfg.backbones, "shallow_dropout", 0.5)),
+                                n_temporal_filters=int(getattr(cfg.backbones, "shallow_n_temporal_filters", 40)),
+                                temporal_kernel=int(getattr(cfg.backbones, "shallow_temporal_kernel", 25)),
+                                pool_size=int(getattr(cfg.backbones, "shallow_pool_size", 75)),
+                                pool_stride=int(getattr(cfg.backbones, "shallow_pool_stride", 15)),
+                                val_fraction=float(getattr(cfg.backbones, "shallow_val_fraction", 0.111)),
+                                patience=int(getattr(cfg.backbones, "shallow_patience", 10)),
+                                device=str(getattr(cfg.backbones, "shallow_device", "cpu")),
+                                random_state=int(cfg.cv.random_state) + int(sid) * 1009,
+                                groups=aasd_groups,
+                                paper_exact=bool(getattr(cfg.backbones, "shallow_paper_exact", False)),
+                            )
                         else:
                             nres = run_transformer_cv_preprocessed(
                                 X_proc=X_eval,
@@ -1221,6 +1376,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                                 random_state=int(cfg.cv.random_state) + int(sid) * 1009,
                                 groups=aasd_groups,
                                 paper_exact=bool(getattr(cfg.backbones, "transformer_paper_exact", False)),
+                                norm_first=bool(getattr(cfg.backbones, "transformer_norm_first", False)),
+                                activation=str(getattr(cfg.backbones, "transformer_activation", "relu")),
                             )
                         null_acc.append(float(np.mean(nres.fold_accuracies)))
                         del nres
