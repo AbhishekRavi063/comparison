@@ -2,7 +2,7 @@
 # Transformer + EEGNet + ShallowConvNet, paper-exact protocol:
 #   Adam lr=0.0001, batch=16, 50 epochs (no early stop), 5-fold trial-grouped CV.
 #   2s same-label window merging matches paper's best reported window size (71.23%).
-data_root: /Users/abhishekr/Documents/EEG/comparison/data/aasd/npz
+data_root: data/aasd/npz
 results_root: ./results/aasd_multimodel_paper_full18sub
 dataset_label: aasd
 
@@ -60,7 +60,7 @@ backbones:
   transformer_activation: relu
 
   # --- EEGNet ---
-  use_eegnet: true
+  use_eegnet: false
   eegnet_target_sfreq: 128
   eegnet_epochs: 50
   eegnet_batch_size: 16
