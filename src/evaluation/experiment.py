@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
+from sklearn.model_selection import GroupKFold, StratifiedKFold, StratifiedShuffleSplit
 from tqdm import tqdm
 
 
@@ -287,14 +287,27 @@ def _build_cv_splits(
     X: np.ndarray,
     y: np.ndarray,
     cfg: "ExperimentConfig",
+    groups: "np.ndarray | None" = None,
 ) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Build CV splits, keeping full AASD 60 s trials together when needed."""
+    """Build CV splits, keeping full AASD trials together.
+
+    When ``groups`` is supplied (post-2s-merge case), GroupKFold on those group
+    IDs is used so no trial's windows leak across train/test.  When the raw
+    (pre-merge) 1-s windows have a strict 60-per-trial layout, the same
+    guarantee is enforced via trial-index arithmetic.
+    """
+    n_splits = cfg.cv.n_splits
+    # Post-merge: groups already encodes trial membership → use GroupKFold.
+    if groups is not None:
+        groups = np.asarray(groups)
+        gkf = GroupKFold(n_splits=n_splits)
+        return list(gkf.split(X, y, groups=groups))
+    # Pre-merge AASD: 60 windows per trial, split at trial level.
     if (
         cfg.dataset_label
         and "aasd" in str(cfg.dataset_label).lower()
         and int(X.shape[0]) >= 120
         and int(X.shape[0]) % 60 == 0
-        and getattr(cfg.backbones, "use_transformer", False)
     ):
         n_trials = int(X.shape[0]) // 60
         y_blocks = np.asarray(y).reshape(n_trials, 60)
@@ -303,7 +316,7 @@ def _build_cv_splits(
             dtype=np.int64,
         )
         cv = StratifiedKFold(
-            n_splits=cfg.cv.n_splits,
+            n_splits=n_splits,
             shuffle=cfg.cv.shuffle,
             random_state=cfg.cv.random_state,
         )
@@ -318,7 +331,7 @@ def _build_cv_splits(
             splits.append((tr_idx, te_idx))
         return splits
     cv = StratifiedKFold(
-        n_splits=cfg.cv.n_splits,
+        n_splits=n_splits,
         shuffle=cfg.cv.shuffle,
         random_state=cfg.cv.random_state,
     )
@@ -600,7 +613,7 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         # Optionally merge adjacent same-label 1s windows → 2s windows.
         if getattr(cfg.cv, "aasd_merge_to_2s", False) and aasd_groups is not None:
             X, y, aasd_groups = _merge_to_2s_windows(X, y, aasd_groups)
-            cv_splits = _build_cv_splits(X, y, cfg)
+            cv_splits = _build_cv_splits(X, y, cfg, groups=aasd_groups)
             log.info(
                 f"  Subject {sid}: merged to 2s windows → {X.shape[0]} windows "
                 f"({X.shape[-1]} samples each)"

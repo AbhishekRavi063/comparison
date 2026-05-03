@@ -4,7 +4,7 @@
 #   weight_decay=0.0001, 5-fold trial-grouped CV (paper 8:1:1 split).
 # Run on all 18 subjects once 2-subject validation passes.
 data_root: /Users/abhishekr/Documents/EEG/comparison/data/aasd/npz
-results_root: ./results/aasd_multimodel_paper_2sub
+results_root: ./results/aasd_multimodel_paper_2sub_10fold
 dataset_label: aasd
 
 subjects: [1, 2]
@@ -16,7 +16,7 @@ bandpass:
   h_freq: 45.0
 
 cv:
-  n_splits: 5
+  n_splits: 10               # paper's 8:1:1 = 48 train : 6 val : 6 test from 60 trials
   shuffle: true
   random_state: 42
   aasd_group_trials: true
