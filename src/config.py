@@ -18,6 +18,9 @@ class CVConfig:
     n_splits: int
     shuffle: bool
     random_state: int
+    # AASD has time-varying labels inside 60 s trials.  Keep this True for a
+    # strict leakage-resistant estimate; set False for paper-style window CV.
+    aasd_group_trials: bool = True
 
 
 @dataclass
@@ -54,6 +57,7 @@ class BackboneConfig:
     use_tangent_space: bool
     use_time_lda: bool = False
     use_transformer: bool = False
+    use_eegnet: bool = False
     # Optional feature decimation target for time-domain LDA.
     # None (or <=0) keeps native sampling rate.
     time_lda_target_sfreq: float | None = None
@@ -76,6 +80,21 @@ class BackboneConfig:
     # description (Adam, no scheduler, no augmentation). Use this for the
     # cleanest "GEDAI improves the published model" head-to-head.
     transformer_paper_exact: bool = False
+    # EEGNet (Lawhern et al. 2018) — same trial handling / preprocessing as Transformer.
+    eegnet_target_sfreq: float | None = None
+    eegnet_epochs: int = 100
+    eegnet_batch_size: int = 32
+    eegnet_learning_rate: float = 1e-3
+    eegnet_weight_decay: float = 1e-4
+    eegnet_dropout: float = 0.25
+    eegnet_F1: int = 8
+    eegnet_D: int = 2
+    eegnet_F2: int = 16
+    eegnet_kernel_length: int | None = None
+    eegnet_val_fraction: float = 0.125
+    eegnet_patience: int = 5
+    eegnet_device: str = "cpu"
+    eegnet_paper_exact: bool = False
     # CSP filters are defined for binary classification; default to skipping CSP
     # when labels are multi-class unless explicitly enabled.
     allow_csp_multiclass: bool = False
@@ -137,6 +156,13 @@ class DenoisingConfig:
     # training trials. The published claim becomes airtight because no test
     # labels touch the GEDAI spatial filter direction.
     gedai_aasd_perfold_refcov: bool = False
+    # AASD GEDAI task-reference blend.  The original class-discriminative-heavy
+    # blend over-removed broadband AASD signal in smoke tests; these safer
+    # defaults preserve more ordinary task covariance while still nudging GEDAI
+    # toward class-relevant directions.
+    gedai_aasd_refcov_disc_weight: float = 0.30
+    gedai_aasd_refcov_task_weight: float = 0.45
+    gedai_aasd_refcov_lw_weight: float = 0.25
     # Anti-Laplacian spatial filter (Reyes-Jiménez et al., Data in Brief 65, 2026 §4.5).
     # The dataset authors validated MRCP extraction using: CAR → Anti-Laplacian → 0.1–1 Hz.
     # Formula: VL(i) = V(i) + (1/N) * sum_{j ∈ neighbors(i)} V(j)
@@ -247,6 +273,15 @@ class ExperimentConfig:
             ),
             gedai_aasd_perfold_refcov=bool(
                 denoising_cfg.get("gedai_aasd_perfold_refcov", False)
+            ),
+            gedai_aasd_refcov_disc_weight=float(
+                denoising_cfg.get("gedai_aasd_refcov_disc_weight", 0.30)
+            ),
+            gedai_aasd_refcov_task_weight=float(
+                denoising_cfg.get("gedai_aasd_refcov_task_weight", 0.45)
+            ),
+            gedai_aasd_refcov_lw_weight=float(
+                denoising_cfg.get("gedai_aasd_refcov_lw_weight", 0.25)
             ),
         )
 

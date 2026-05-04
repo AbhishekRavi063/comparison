@@ -1,0 +1,58 @@
+# Professor sanity-check: Riemannian (tangent space) + CSP on the SAME NPZ
+# pipeline as the Transformer 4-sub run (128 Hz, 0.1–45 Hz, CAR baseline).
+# Baseline denoising only — fast; answers: “Is anything learnable without DL?”
+#
+# Run:
+#   python -m src.run_all --config config/config_aasd_riemannian_full4sub.yml \
+#     --results-root results/aasd_riemannian_full4sub
+#
+# Interpret vs Transformer CSV:
+#   - Tangent/CSP >> 50% and Transformer ~50% → focus on DL training/architecture.
+#   - All ~50% → suspect labels or preprocessing; run src.diagnose_aasd_npz.
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_riemannian_full4sub
+dataset_label: aasd
+
+subjects: [1, 2, 3, 4]
+# max_trials omitted → full 60 trials × 60 windows = 3600 per subject.
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 45.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: true
+  use_tangent_space: true
+  use_time_lda: false
+  use_transformer: false
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: false
+
+signal_integrity:
+  channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]
+  segment_duration_s: 1.0

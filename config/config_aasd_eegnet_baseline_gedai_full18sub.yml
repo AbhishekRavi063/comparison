@@ -1,0 +1,77 @@
+# AASD: EEGNet baseline + GEDAI on all 18 prepared subjects.
+# Strict grouped-trial CV: all 60 one-second windows from an original trial
+# stay in the same fold, matching the paper's train/validation/test constraint.
+#
+# Run:
+#   HOME=/tmp MPLCONFIGDIR=/tmp/mplconfig MNE_DONTWRITE_HOME=true \
+#   python3 -m src.run_all --config config/config_aasd_eegnet_baseline_gedai_full18sub.yml \
+#     --results-root results/aasd_eegnet_full18sub
+data_root: ./data/aasd/npz
+results_root: ./results/aasd_eegnet_full18sub
+dataset_label: aasd
+
+subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+
+sampling_rate: 128
+
+bandpass:
+  l_freq: 0.1
+  h_freq: 45.0
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  aasd_group_trials: true
+
+statistics:
+  subject_chance_method: binomial
+  pipeline_comparison_method: mann_whitney
+
+permutation:
+  n_subject_level: 0
+  n_pipeline_level: 0
+  adaptive_step_up: false
+
+memory:
+  float_dtype: float32
+  n_jobs: 1
+  save_models: false
+
+backbones:
+  use_csp: false
+  use_tangent_space: false
+  use_time_lda: false
+  use_transformer: false
+  use_eegnet: true
+  eegnet_target_sfreq: 128
+  eegnet_epochs: 100
+  eegnet_batch_size: 32
+  eegnet_learning_rate: 0.001
+  eegnet_weight_decay: 0.0001
+  eegnet_dropout: 0.25
+  eegnet_F1: 8
+  eegnet_D: 2
+  eegnet_F2: 16
+  eegnet_kernel_length: null
+  eegnet_val_fraction: 0.125
+  eegnet_patience: 10
+  eegnet_device: cpu
+  eegnet_paper_exact: true
+
+denoising:
+  use_baseline: true
+  use_icalabel: false
+  use_asr: false
+  use_gedai: true
+  gedai_aasd_adaptive_gate: true
+  gedai_aasd_gate_margin: -0.02
+  gedai_aasd_gate_inner_splits: 2
+  gedai_aasd_perfold_refcov: true
+  gedai_aasd_refcov_disc_weight: 0.30
+  gedai_aasd_refcov_task_weight: 0.45
+  gedai_aasd_refcov_lw_weight: 0.25
+
+signal_integrity:
+  channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]
+  segment_duration_s: 1.0

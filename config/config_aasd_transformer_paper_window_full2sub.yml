@@ -1,14 +1,16 @@
-# AASD strict grouped-trial 2-subject FULL run (no max_trials cap, paper hyperparams).
-# Goal: confirm GEDAI improves Transformer accuracy on data scale comparable
-# to the paper, while keeping all 1s windows from each 60s trial in the same
-# outer fold.
+# AASD paper-style window-CV check: Transformer baseline + GEDAI.
+# This reproduces the easier per-window split family of protocols. Do not use
+# it alone for strong leakage-resistant claims; pair it with grouped-CV results.
+#
+# Run:
+#   HOME=/tmp MPLCONFIGDIR=/tmp/mplconfig MNE_DONTWRITE_HOME=true \
+#   python3 -m src.run_all --config config/config_aasd_transformer_paper_window_full2sub.yml \
+#     --results-root results/aasd_transformer_paper_window_full2sub
 data_root: ./data/aasd/npz
-results_root: ./results/aasd_transformer_full2sub
+results_root: ./results/aasd_transformer_paper_window_full2sub
 dataset_label: aasd
 
 subjects: [1, 2]
-# IMPORTANT: max_trials intentionally omitted so the experiment uses ALL 60
-# trials (3600 windows) per subject, matching paper-style scale.
 
 sampling_rate: 128
 
@@ -20,9 +22,7 @@ cv:
   n_splits: 5
   shuffle: true
   random_state: 42
-  # Strict protocol: group all 60 windows from each original trial.
-  # Set false only in paper-window configs.
-  aasd_group_trials: true
+  aasd_group_trials: false
 
 statistics:
   subject_chance_method: binomial
@@ -56,9 +56,6 @@ backbones:
   transformer_val_fraction: 0.125
   transformer_patience: 10
   transformer_device: cpu
-  # Match the AASD paper's training recipe exactly: vanilla Adam, no LR
-  # scheduler, no augmentation, no gradient clipping. This makes the
-  # head-to-head GEDAI vs paper-Transformer claim airtight.
   transformer_paper_exact: true
 
 denoising:
@@ -69,10 +66,11 @@ denoising:
   gedai_aasd_adaptive_gate: true
   gedai_aasd_gate_margin: -0.02
   gedai_aasd_gate_inner_splits: 2
-  # Leakage-safe spatial filter: fit the CSP-style refcov from each outer
-  # fold's training trials only. K x apply_gedai per subject, but no test
-  # labels touch the GEDAI direction.
   gedai_aasd_perfold_refcov: true
+  # Safer blend: dynamic-window labels, less class-discriminative-heavy refcov.
+  gedai_aasd_refcov_disc_weight: 0.30
+  gedai_aasd_refcov_task_weight: 0.45
+  gedai_aasd_refcov_lw_weight: 0.25
 
 signal_integrity:
   channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]

@@ -217,7 +217,14 @@ def _extract_trials_from_concat(
     return out
 
 
-def _compute_aasd_task_refcov(X: np.ndarray, y: np.ndarray) -> np.ndarray:
+def _compute_aasd_task_refcov(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    disc_weight: float = 0.30,
+    task_weight: float = 0.45,
+    lw_weight: float = 0.25,
+) -> np.ndarray:
     """Build a class-discriminative reference covariance for AASD.
 
     Uses a CSP-style construction: the generalized eigendecomposition of
@@ -286,12 +293,21 @@ def _compute_aasd_task_refcov(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     cov_disc = vecs @ np.diag(weights.astype(np.float64)) @ vecs.T
     cov_disc = 0.5 * (cov_disc + cov_disc.T)
 
-    # Final reference: 60% class-discriminative subspace, 25% task covariance,
-    # 15% Ledoit-Wolf covariance for spectral conditioning.
+    # Final reference: configurable blend.  The safer default is intentionally
+    # less class-discriminative-heavy because the dynamic AASD labels switch
+    # inside trials and an overly sharp reference was causing GEDAI over-removal.
     cov_disc_norm = cov_disc / (float(np.trace(cov_disc) / max(1, n_ch)) + 1e-12)
     cov_task_norm = cov_task / (float(np.trace(cov_task) / max(1, n_ch)) + 1e-12)
     cov_lw_norm = cov_lw / (float(np.trace(cov_lw) / max(1, n_ch)) + 1e-12)
-    cov = 0.60 * cov_disc_norm + 0.25 * cov_task_norm + 0.15 * cov_lw_norm
+    weights = np.asarray([disc_weight, task_weight, lw_weight], dtype=np.float64)
+    if not np.all(np.isfinite(weights)) or float(weights.sum()) <= 0:
+        weights = np.asarray([0.30, 0.45, 0.25], dtype=np.float64)
+    weights = weights / float(weights.sum())
+    cov = (
+        float(weights[0]) * cov_disc_norm
+        + float(weights[1]) * cov_task_norm
+        + float(weights[2]) * cov_lw_norm
+    )
     cov = 0.5 * (cov + cov.T)
     eps = 1e-6 * float(np.trace(cov) / max(1, n_ch))
     cov += eps * np.eye(n_ch, dtype=np.float64)
@@ -2296,6 +2312,9 @@ def preprocess_subject_data(
     mrcp_refcov_rank_max: int | None = None,
     mrcp_refcov_motor_weight: float | None = None,
     mrcp_refcov_move_mix: float | None = None,
+    aasd_refcov_disc_weight: float = 0.30,
+    aasd_refcov_task_weight: float = 0.45,
+    aasd_refcov_lw_weight: float = 0.25,
     use_anti_laplacian: bool = False,
     anti_laplacian_n_neighbors: int = 4,
 ) -> np.ndarray:
@@ -2530,40 +2549,37 @@ def preprocess_subject_data(
         # disabled meaningful guards and always forced GEDAI output, which is what
         # caused the heavy over-removal in smoke tests.
         is_alpha_only_aasd = float(l_freq) >= 7.5 and float(h_freq) <= 12.5
-        refcov_input = (
-            X_trials if is_alpha_only_aasd else _average_reference_trials(X_trials)
-        )
-        # Leakage-safe option: when train_idx is provided (window-level indices),
-        # restrict the refcov fit to those trials whose windows are all in train.
-        # AASD uses grouped CV where 60-second trials are kept intact, so each
-        # trial's windows are either entirely train or entirely test.
+        refcov_input = X if is_alpha_only_aasd else _average_reference_trials(X)
+        # Leakage-safe option: when train_idx is provided, fit the refcov on the
+        # training windows directly.  This matters for AASD because labels switch
+        # inside a 60 s trial; majority-voting each long trial can erase the
+        # actual paper target and make GEDAI preserve the wrong class structure.
         refcov_X = refcov_input
-        refcov_y = y_trials
-        if train_idx is not None and win_per_trial > 0:
+        refcov_y = np.asarray(y).ravel()
+        if train_idx is not None:
             train_idx_arr = np.asarray(train_idx, dtype=int).ravel()
-            train_mask_win = np.zeros(int(X.shape[0]), dtype=bool)
-            train_mask_win[train_idx_arr] = True
-            n_trials_total = int(X_trials.shape[0])
-            train_trials_mask = np.zeros(n_trials_total, dtype=bool)
-            for t_i in range(n_trials_total):
-                start = t_i * int(win_per_trial)
-                end = start + int(win_per_trial)
-                if end <= train_mask_win.shape[0] and bool(np.all(train_mask_win[start:end])):
-                    train_trials_mask[t_i] = True
-            n_train_trials = int(train_trials_mask.sum())
-            classes_present = np.unique(refcov_y[train_trials_mask]) if n_train_trials > 0 else np.array([])
-            if n_train_trials >= 4 and classes_present.size >= 2:
-                refcov_X = refcov_input[train_trials_mask]
-                refcov_y = y_trials[train_trials_mask]
+            train_idx_arr = train_idx_arr[
+                (train_idx_arr >= 0) & (train_idx_arr < int(refcov_input.shape[0]))
+            ]
+            classes_present = np.unique(refcov_y[train_idx_arr]) if train_idx_arr.size > 0 else np.array([])
+            if train_idx_arr.size >= 8 and classes_present.size >= 2:
+                refcov_X = refcov_input[train_idx_arr]
+                refcov_y = refcov_y[train_idx_arr]
             else:
                 import warnings as _w
                 _w.warn(
-                    "AASD per-fold refcov fallback: train trials="
-                    f"{n_train_trials}, classes={classes_present.size}; "
-                    "using all trials for refcov this fold.",
+                    "AASD per-fold refcov fallback: train windows="
+                    f"{train_idx_arr.size}, classes={classes_present.size}; "
+                    "using all windows for refcov this fold.",
                     RuntimeWarning,
                 )
-        refcov = _compute_aasd_task_refcov(refcov_X, refcov_y)
+        refcov = _compute_aasd_task_refcov(
+            refcov_X,
+            refcov_y,
+            disc_weight=aasd_refcov_disc_weight,
+            task_weight=aasd_refcov_task_weight,
+            lw_weight=aasd_refcov_lw_weight,
+        )
         if is_alpha_only_aasd:
             gedai_kwargs = dict(
                 include_subband_guards=False,

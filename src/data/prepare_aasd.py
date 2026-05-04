@@ -359,6 +359,18 @@ def _extract_window_labels_from_eeg_new_event(
                 labels[trial_i, :] = int(trial_fallback[trial_i])
                 continue
 
+            base_rows = [
+                r for r in rows.tolist() if int(code_vals[r]) not in state_code_to_label
+            ]
+            # The trial-start code (11-70 in the public EEG_new files) encodes
+            # the attention state before the first recurrent 179/184 switch
+            # marker.  Using the first switch marker for the whole trial flips
+            # the early windows in many trials.
+            initial_label = int(trial_fallback[trial_i])
+            if base_rows:
+                base_first = min(base_rows, key=lambda r: float(lat_vals[r]))
+                initial_label = 0 if int(code_vals[base_first]) % 2 == 1 else 1
+
             lats = lat_vals[state_rows].astype(float)
             # Latencies may be within-trial samples or continuous/absolute samples.
             # Convert robustly to 0-based samples relative to this trial.
@@ -372,7 +384,7 @@ def _extract_window_labels_from_eeg_new_event(
                 [state_code_to_label[int(code_vals[state_rows[j]])] for j in order],
                 dtype=int,
             )
-            labels[trial_i, :] = int(state_labels[0])
+            labels[trial_i, :] = int(initial_label)
             win_samples = int(round(float(sfreq) * float(window_s)))
             for win_i in range(n_windows):
                 midpoint = (win_i + 0.5) * win_samples
@@ -384,6 +396,64 @@ def _extract_window_labels_from_eeg_new_event(
         warnings.warn(
             f"Subject {subject}: failed dynamic EEG_new event-label parsing ({exc}); "
             "falling back to trial-level labels."
+        )
+        return None
+
+
+def _extract_valid_windows_from_eeg_new_event(
+    event_obj,
+    *,
+    n_trials: int,
+    n_times: int,
+    sfreq: float,
+    window_s: float,
+) -> Optional[np.ndarray]:
+    """Mask windows after the first completed attention switch in each trial.
+
+    AASD labels are defined from recorded attentional focus after completed
+    switches. Windows before the first recurrent 179/184 state marker are a
+    trial-initial state rather than a completed-switch state, so downstream
+    analyses can exclude them without losing the 60-window trial layout.
+    """
+    if event_obj is None:
+        return None
+    try:
+        ev = np.asarray(event_obj)
+        if ev.ndim != 2 or ev.shape[1] < 5:
+            return None
+        code_vals = np.array([int(float(str(v))) for v in ev[:, 0]], dtype=int)
+        lat_vals = np.array([float(str(v)) for v in ev[:, 1]], dtype=float)
+        trial_ids = np.array([int(float(str(v))) for v in ev[:, 4]], dtype=int)
+        n_windows = int(n_times // int(round(float(sfreq) * float(window_s))))
+        if n_windows <= 0:
+            return None
+        mask = np.ones((n_trials, n_windows), dtype=bool)
+        win_samples = int(round(float(sfreq) * float(window_s)))
+
+        for trial_i in range(n_trials):
+            trial_num = trial_i + 1
+            rows = np.flatnonzero(trial_ids == trial_num)
+            if rows.size == 0:
+                continue
+            state_rows = [
+                r for r in rows.tolist() if int(code_vals[r]) in (179, 184)
+            ]
+            if not state_rows:
+                continue
+            lats = lat_vals[state_rows].astype(float)
+            if np.nanmax(lats) > n_times + 1:
+                rel_lats = lats - np.nanmin(lat_vals[rows])
+            else:
+                rel_lats = lats - 1.0
+            first_state = float(np.nanmin(rel_lats))
+            for win_i in range(n_windows):
+                midpoint = (win_i + 0.5) * win_samples
+                if midpoint < first_state:
+                    mask[trial_i, win_i] = False
+        return mask
+    except Exception as exc:
+        warnings.warn(
+            f"Failed AASD valid-window mask extraction ({exc}); all windows marked valid."
         )
         return None
 
