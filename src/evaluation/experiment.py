@@ -385,6 +385,48 @@ def _merge_to_2s_windows(
     return X2, y2, g2
 
 
+def _build_merge_pairs(
+    y: np.ndarray,
+    groups: "np.ndarray | None",
+) -> "List[Tuple[int, int]]":
+    """Return (i0, i1) index pairs that _merge_to_2s_windows merges — same logic, no X copy."""
+    n = len(y)
+    pairs: List[Tuple[int, int]] = []
+    i = 0
+    while i < n - 1:
+        same_trial = (groups is None) or (int(groups[i]) == int(groups[i + 1]))
+        if same_trial and int(y[i]) == int(y[i + 1]):
+            pairs.append((i, i + 1))
+            i += 2
+        else:
+            i += 1
+    return pairs
+
+
+def _remerge_1s_to_2s(
+    X_1s: np.ndarray,
+    merge_pairs: "List[Tuple[int, int]]",
+) -> np.ndarray:
+    """Apply saved merge pairs to GEDAI-cleaned 1s windows → 2s windows."""
+    return np.stack(
+        [np.concatenate([X_1s[i0], X_1s[i1]], axis=-1) for i0, i1 in merge_pairs],
+        axis=0,
+    ).astype(np.float32, copy=False)
+
+
+def _map_2s_to_1s_idx(
+    idx_2s: np.ndarray,
+    merge_pairs: "List[Tuple[int, int]]",
+) -> np.ndarray:
+    """Map 2s-window indices back to the 1s-window indices that formed them."""
+    flat: set = set()
+    for j in idx_2s:
+        i0, i1 = merge_pairs[int(j)]
+        flat.add(i0)
+        flat.add(i1)
+    return np.array(sorted(flat), dtype=int)
+
+
 def _is_borderline_p_value(p_value: float, cfg: ExperimentConfig) -> bool:
     low = float(cfg.permutation.borderline_low)
     high = float(cfg.permutation.borderline_high)
@@ -611,7 +653,16 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
         aasd_groups = _aasd_window_groups(X, cfg)
 
         # Optionally merge adjacent same-label 1s windows → 2s windows.
+        # Save 1s data for GEDAI (which must preprocess 1s windows then re-merge).
+        _X_1s: np.ndarray | None = None
+        _y_1s: np.ndarray | None = None
+        _groups_1s: np.ndarray | None = None
+        _merge_pairs: List[Tuple[int, int]] | None = None
         if getattr(cfg.cv, "aasd_merge_to_2s", False) and aasd_groups is not None:
+            _X_1s = X
+            _y_1s = y
+            _groups_1s = aasd_groups
+            _merge_pairs = _build_merge_pairs(_y_1s, _groups_1s)
             X, y, aasd_groups = _merge_to_2s_windows(X, y, aasd_groups)
             cv_splits = _build_cv_splits(X, y, cfg, groups=aasd_groups)
             log.info(
@@ -659,11 +710,18 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                 X_proc = None
                 X_eval = None
                 for fold_i, (train_idx, _test_idx) in enumerate(cv_splits):
+                    # AASD post-merge: GEDAI must run on 1s windows; map train_idx back.
+                    _gedai_X = _X_1s if _merge_pairs is not None else X
+                    _gedai_y = _y_1s if _merge_pairs is not None else y
+                    _gedai_train = (
+                        _map_2s_to_1s_idx(train_idx, _merge_pairs)
+                        if _merge_pairs is not None else train_idx
+                    )
                     X_fold = preprocess_subject_data(
-                        X=X,
+                        X=_gedai_X,
                         sfreq=subj_data.sfreq,
                         ch_names=subj_data.ch_names,
-                        y=y,
+                        y=_gedai_y,
                         l_freq=cfg.bandpass.l_freq,
                         h_freq=cfg.bandpass.h_freq,
                         denoising="gedai",
@@ -671,10 +729,12 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         dataset_name=cfg.dataset_label or "",
                         gedai_n_jobs=cfg.memory.n_jobs,
                         data_root=cfg.data_root,
-                        train_idx=train_idx,
+                        train_idx=_gedai_train,
                         use_anti_laplacian=cfg.denoising.use_anti_laplacian,
                         anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
                     )
+                    if _merge_pairs is not None:
+                        X_fold = _remerge_1s_to_2s(X_fold, _merge_pairs)
                     X_fold_eval = (
                         X_fold[:, eval_ch_idx, :] if eval_ch_idx is not None else X_fold
                     )
@@ -754,11 +814,18 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         for train_idx, test_idx in cv_splits
                     ]
             else:
+                # AASD post-merge + GEDAI: preprocess 1s windows, then re-merge to 2s.
+                _std_gedai_1s = (
+                    pipeline == "gedai"
+                    and _merge_pairs is not None
+                    and cfg.dataset_label
+                    and "aasd" in str(cfg.dataset_label).lower()
+                )
                 X_proc = preprocess_subject_data(
-                    X=X,
+                    X=(_X_1s if _std_gedai_1s else X),
                     sfreq=subj_data.sfreq,
                     ch_names=subj_data.ch_names,
-                    y=y,
+                    y=(_y_1s if _std_gedai_1s else y),
                     l_freq=cfg.bandpass.l_freq,
                     h_freq=cfg.bandpass.h_freq,
                     denoising=pipeline,
@@ -790,6 +857,8 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     use_anti_laplacian=cfg.denoising.use_anti_laplacian,
                     anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
                 )
+                if _std_gedai_1s:
+                    X_proc = _remerge_1s_to_2s(X_proc, _merge_pairs)
                 X_eval = X_proc[:, eval_ch_idx, :] if eval_ch_idx is not None else X_proc
                 if (
                     pipeline == "baseline"
