@@ -732,6 +732,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         train_idx=_gedai_train,
                         use_anti_laplacian=cfg.denoising.use_anti_laplacian,
                         anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
+                        aasd_use_leadfield_refcov=getattr(cfg.denoising, "gedai_aasd_use_leadfield_refcov", False),
+                        aasd_gedai_duration_s=getattr(cfg.denoising, "gedai_aasd_duration_s", 8.0),
+                        aasd_two_pass_refcov=getattr(cfg.denoising, "gedai_aasd_two_pass_refcov", False),
                     )
                     if _merge_pairs is not None:
                         X_fold = _remerge_1s_to_2s(X_fold, _merge_pairs)
@@ -856,6 +859,9 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     mrcp_refcov_move_mix=cfg.denoising.gedai_mrcp_refcov_move_mix,
                     use_anti_laplacian=cfg.denoising.use_anti_laplacian,
                     anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
+                    aasd_use_leadfield_refcov=getattr(cfg.denoising, "gedai_aasd_use_leadfield_refcov", False),
+                    aasd_gedai_duration_s=getattr(cfg.denoising, "gedai_aasd_duration_s", 8.0),
+                    aasd_two_pass_refcov=getattr(cfg.denoising, "gedai_aasd_two_pass_refcov", False),
                 )
                 if _std_gedai_1s:
                     X_proc = _remerge_1s_to_2s(X_proc, _merge_pairs)

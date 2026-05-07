@@ -61,7 +61,7 @@ backbones:
   transformer_activation: relu
 
   # --- EEGNet (paper-calibrated) ---
-  use_eegnet: true
+  use_eegnet: false
   eegnet_target_sfreq: 128
   eegnet_epochs: 50
   eegnet_batch_size: 16
@@ -92,7 +92,7 @@ backbones:
   shallow_val_fraction: 0.111
   shallow_patience: 10
   shallow_device: cpu
-  shallow_paper_exact: true
+  shallow_paper_exact: false
 
 denoising:
   use_baseline: true

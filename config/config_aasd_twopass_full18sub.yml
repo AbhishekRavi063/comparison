@@ -3,7 +3,7 @@
 #   Adam lr=0.0001, batch=16, 50 epochs (no early stop), 5-fold trial-grouped CV.
 #   2s same-label window merging matches paper's best reported window size (71.23%).
 data_root: /Users/abhishekr/Documents/EEG/comparison/data/aasd/npz
-results_root: ./results/aasd_multimodel_gedai_10fold_full18sub
+results_root: ./results/aasd_twopass_full18sub
 dataset_label: aasd
 
 subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
@@ -102,6 +102,7 @@ denoising:
   gedai_aasd_gate_margin: -0.02    # allow gedai even if it's slightly worse (–2%)
   gedai_aasd_gate_inner_splits: 2
   gedai_aasd_perfold_refcov: true  # recompute refcov from fold's train trials only (no leakage)
+  gedai_aasd_two_pass_refcov: true  # pass 1: leadfield-clean training trials, pass 2: CSP refcov from clean data
 
 signal_integrity:
   channels_of_interest: ["F3", "Fz", "F4", "C3", "Cz", "C4", "P3", "Pz", "P4"]

@@ -217,6 +217,52 @@ def _extract_trials_from_concat(
     return out
 
 
+_LEADFIELD_REFCOV_CACHE: dict = {}
+
+
+def _compute_leadfield_refcov(ch_names: "list[str] | tuple[str, ...]") -> np.ndarray:
+    """Build a leadfield-based reference covariance from MNE fsaverage forward model.
+
+    Computes refcov = G @ G.T (sum over dipoles) where G is the leadfield matrix
+    for the given EEG channel montage. This is the canonical GEDAI reference
+    covariance — physics-based, label-agnostic, and reproducible across studies.
+    """
+    import mne
+
+    key = tuple(ch_names)
+    if key in _LEADFIELD_REFCOV_CACHE:
+        return _LEADFIELD_REFCOV_CACHE[key]
+
+    fs_dir = mne.datasets.fetch_fsaverage(verbose=False)
+    import os
+    subjects_dir = os.path.dirname(fs_dir)
+    subject = "fsaverage"
+    trans = "fsaverage"
+    src = os.path.join(fs_dir, "bem", "fsaverage-ico-5-src.fif")
+    bem = os.path.join(fs_dir, "bem", "fsaverage-5120-5120-5120-bem-sol.fif")
+
+    info = mne.create_info(ch_names=list(ch_names), sfreq=128.0, ch_types="eeg")
+    montage = mne.channels.make_standard_montage("standard_1005")
+    info.set_montage(montage, on_missing="ignore")
+
+    fwd = mne.make_forward_solution(
+        info, trans=trans, src=src, bem=bem,
+        eeg=True, meg=False, mindist=5.0, n_jobs=1, verbose=False,
+    )
+    fwd = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=True, verbose=False)
+    G = fwd["sol"]["data"]  # shape: (n_channels, n_dipoles)
+    G = np.asarray(G, dtype=np.float64)
+    G -= G.mean(axis=0, keepdims=True)
+    cov = G @ G.T
+    n_ch = cov.shape[0]
+    cov = 0.5 * (cov + cov.T)
+    cov_norm = cov / (float(np.trace(cov) / max(1, n_ch)) + 1e-12)
+    eps = 1e-6 * float(np.trace(cov_norm) / max(1, n_ch))
+    cov_norm += eps * np.eye(n_ch, dtype=np.float64)
+    _LEADFIELD_REFCOV_CACHE[key] = cov_norm
+    return cov_norm
+
+
 def _compute_aasd_task_refcov(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Build a class-discriminative reference covariance for AASD.
 
@@ -2298,6 +2344,9 @@ def preprocess_subject_data(
     mrcp_refcov_move_mix: float | None = None,
     use_anti_laplacian: bool = False,
     anti_laplacian_n_neighbors: int = 4,
+    aasd_use_leadfield_refcov: bool = False,
+    aasd_gedai_duration_s: float = 8.0,
+    aasd_two_pass_refcov: bool = False,
 ) -> np.ndarray:
     """Preprocess one subject once per denoising pipeline.
 
@@ -2548,7 +2597,7 @@ def preprocess_subject_data(
             for t_i in range(n_trials_total):
                 start = t_i * int(win_per_trial)
                 end = start + int(win_per_trial)
-                if end <= train_mask_win.shape[0] and bool(np.all(train_mask_win[start:end])):
+                if end <= train_mask_win.shape[0] and bool(np.mean(train_mask_win[start:end]) > 0.5):
                     train_trials_mask[t_i] = True
             n_train_trials = int(train_trials_mask.sum())
             classes_present = np.unique(refcov_y[train_trials_mask]) if n_train_trials > 0 else np.array([])
@@ -2563,7 +2612,43 @@ def preprocess_subject_data(
                     "using all trials for refcov this fold.",
                     RuntimeWarning,
                 )
-        refcov = _compute_aasd_task_refcov(refcov_X, refcov_y)
+        if aasd_use_leadfield_refcov:
+            refcov = _compute_leadfield_refcov(ch_names)
+        elif aasd_two_pass_refcov:
+            # Two-pass: pass 1 cleans training trials with leadfield refcov,
+            # then build CSP-discriminative refcov from cleaned data (no chicken-and-egg).
+            leadfield_refcov = _compute_leadfield_refcov(ch_names)
+            pass1_kwargs = dict(
+                include_subband_guards=True,
+                broadband_noise_multiplier=2.0,
+                spectral_noise_multiplier=2.0,
+                use_spectral_step=False,
+                retention_median_min=0.60,
+                retention_hard_min=0.50,
+                reference_cov=leadfield_refcov,
+                average_reference_baseline=True,
+                gedai_duration=float(aasd_gedai_duration_s),
+                highpass_cutoff=None,
+                threshold_relaxation_scales=(1.25, 1.5, 2.0, 3.0),
+            )
+            try:
+                refcov_X_clean = apply_gedai(
+                    refcov_X.astype(np.float32, copy=False),
+                    sfreq,
+                    ch_names,
+                    l_freq,
+                    h_freq,
+                    gedai_n_jobs=gedai_n_jobs,
+                    bridge_samples=0,
+                    **pass1_kwargs,
+                ).astype(np.float64, copy=False)
+            except Exception as _e:
+                import warnings as _w
+                _w.warn(f"Two-pass GEDAI pass-1 failed ({_e}); falling back to raw refcov.", RuntimeWarning)
+                refcov_X_clean = refcov_X
+            refcov = _compute_aasd_task_refcov(refcov_X_clean, refcov_y)
+        else:
+            refcov = _compute_aasd_task_refcov(refcov_X, refcov_y)
         if is_alpha_only_aasd:
             gedai_kwargs = dict(
                 include_subband_guards=False,
@@ -2590,7 +2675,7 @@ def preprocess_subject_data(
                 retention_hard_min=0.50,
                 reference_cov=refcov,
                 average_reference_baseline=True,
-                gedai_duration=8.0,
+                gedai_duration=float(aasd_gedai_duration_s),
                 highpass_cutoff=None,
                 threshold_relaxation_scales=(1.25, 1.5, 2.0, 3.0),
             )

@@ -181,6 +181,16 @@ class DenoisingConfig:
     # training trials. The published claim becomes airtight because no test
     # labels touch the GEDAI spatial filter direction.
     gedai_aasd_perfold_refcov: bool = False
+    # When True, replace CSP-style task refcov with leadfield-based refcov
+    # (canonical GEDAI; physics-based, label-agnostic, fsaverage forward model).
+    gedai_aasd_use_leadfield_refcov: bool = False
+    # Internal GEDAI segment duration (seconds) for AASD denoising.
+    gedai_aasd_duration_s: float = 8.0
+    # Two-pass GEDAI: pass 1 uses leadfield refcov to clean training trials;
+    # task-discriminative refcov is then computed from the cleaned data
+    # (avoiding the chicken-and-egg of building CSP on artifact-contaminated cov).
+    # The cleaned-data refcov is used for the actual GEDAI pass on all trials.
+    gedai_aasd_two_pass_refcov: bool = False
     # Anti-Laplacian spatial filter (Reyes-Jiménez et al., Data in Brief 65, 2026 §4.5).
     # The dataset authors validated MRCP extraction using: CAR → Anti-Laplacian → 0.1–1 Hz.
     # Formula: VL(i) = V(i) + (1/N) * sum_{j ∈ neighbors(i)} V(j)
@@ -291,6 +301,15 @@ class ExperimentConfig:
             ),
             gedai_aasd_perfold_refcov=bool(
                 denoising_cfg.get("gedai_aasd_perfold_refcov", False)
+            ),
+            gedai_aasd_use_leadfield_refcov=bool(
+                denoising_cfg.get("gedai_aasd_use_leadfield_refcov", False)
+            ),
+            gedai_aasd_duration_s=float(
+                denoising_cfg.get("gedai_aasd_duration_s", 8.0)
+            ),
+            gedai_aasd_two_pass_refcov=bool(
+                denoising_cfg.get("gedai_aasd_two_pass_refcov", False)
             ),
         )
 
