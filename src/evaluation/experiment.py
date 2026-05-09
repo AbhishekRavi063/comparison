@@ -734,6 +734,17 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                         anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
                         aasd_use_leadfield_refcov=getattr(cfg.denoising, "gedai_aasd_use_leadfield_refcov", False),
                         aasd_gedai_duration_s=getattr(cfg.denoising, "gedai_aasd_duration_s", 8.0),
+                        aasd_broadband_noise_multiplier=getattr(
+                            cfg.denoising, "gedai_aasd_broadband_noise_multiplier", 2.0
+                        ),
+                        aasd_spectral_noise_multiplier=getattr(
+                            cfg.denoising, "gedai_aasd_spectral_noise_multiplier", 2.0
+                        ),
+                        aasd_resample_hz=getattr(
+                            cfg.denoising, "gedai_aasd_resample_hz", 0.0
+                        ),
+                        aasd_adaptive_epoching=getattr(cfg.denoising, "gedai_aasd_adaptive_epoching", False),
+                        aasd_epoch_size_in_cycles=getattr(cfg.denoising, "gedai_aasd_epoch_size_in_cycles", 12.0),
                         aasd_two_pass_refcov=getattr(cfg.denoising, "gedai_aasd_two_pass_refcov", False),
                     )
                     if _merge_pairs is not None:
@@ -861,6 +872,17 @@ def run_experiment(cfg: ExperimentConfig) -> ExperimentResult:
                     anti_laplacian_n_neighbors=cfg.denoising.anti_laplacian_n_neighbors,
                     aasd_use_leadfield_refcov=getattr(cfg.denoising, "gedai_aasd_use_leadfield_refcov", False),
                     aasd_gedai_duration_s=getattr(cfg.denoising, "gedai_aasd_duration_s", 8.0),
+                    aasd_broadband_noise_multiplier=getattr(
+                        cfg.denoising, "gedai_aasd_broadband_noise_multiplier", 2.0
+                    ),
+                    aasd_spectral_noise_multiplier=getattr(
+                        cfg.denoising, "gedai_aasd_spectral_noise_multiplier", 2.0
+                    ),
+                    aasd_resample_hz=getattr(
+                        cfg.denoising, "gedai_aasd_resample_hz", 0.0
+                    ),
+                    aasd_adaptive_epoching=getattr(cfg.denoising, "gedai_aasd_adaptive_epoching", False),
+                    aasd_epoch_size_in_cycles=getattr(cfg.denoising, "gedai_aasd_epoch_size_in_cycles", 12.0),
                     aasd_two_pass_refcov=getattr(cfg.denoising, "gedai_aasd_two_pass_refcov", False),
                 )
                 if _std_gedai_1s:

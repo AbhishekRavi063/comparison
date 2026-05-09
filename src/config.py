@@ -186,6 +186,16 @@ class DenoisingConfig:
     gedai_aasd_use_leadfield_refcov: bool = False
     # Internal GEDAI segment duration (seconds) for AASD denoising.
     gedai_aasd_duration_s: float = 8.0
+    # Broadband and spectral GEDAI noise multipliers for AASD.
+    gedai_aasd_broadband_noise_multiplier: float = 2.0
+    gedai_aasd_spectral_noise_multiplier: float = 2.0
+    # Optional internal resampling rate for AASD GEDAI processing (e.g. 250 Hz).
+    # If <= 0, keep the native NPZ sampling rate.
+    gedai_aasd_resample_hz: float = 0.0
+    # When True, use GEDAI's frequency-specific epoching for AASD spectral denoising.
+    gedai_aasd_adaptive_epoching: bool = False
+    # Number of wave cycles per band when adaptive epoching is enabled.
+    gedai_aasd_epoch_size_in_cycles: float = 12.0
     # Two-pass GEDAI: pass 1 uses leadfield refcov to clean training trials;
     # task-discriminative refcov is then computed from the cleaned data
     # (avoiding the chicken-and-egg of building CSP on artifact-contaminated cov).
@@ -307,6 +317,21 @@ class ExperimentConfig:
             ),
             gedai_aasd_duration_s=float(
                 denoising_cfg.get("gedai_aasd_duration_s", 8.0)
+            ),
+            gedai_aasd_broadband_noise_multiplier=float(
+                denoising_cfg.get("gedai_aasd_broadband_noise_multiplier", 2.0)
+            ),
+            gedai_aasd_spectral_noise_multiplier=float(
+                denoising_cfg.get("gedai_aasd_spectral_noise_multiplier", 2.0)
+            ),
+            gedai_aasd_resample_hz=float(
+                denoising_cfg.get("gedai_aasd_resample_hz", 0.0)
+            ),
+            gedai_aasd_adaptive_epoching=bool(
+                denoising_cfg.get("gedai_aasd_adaptive_epoching", False)
+            ),
+            gedai_aasd_epoch_size_in_cycles=float(
+                denoising_cfg.get("gedai_aasd_epoch_size_in_cycles", 12.0)
             ),
             gedai_aasd_two_pass_refcov=bool(
                 denoising_cfg.get("gedai_aasd_two_pass_refcov", False)

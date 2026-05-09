@@ -220,6 +220,15 @@ def _extract_trials_from_concat(
 _LEADFIELD_REFCOV_CACHE: dict = {}
 
 
+def _reference_cov_arg(reference_cov):
+    """Return a GEDAI-compatible reference covariance argument."""
+    if reference_cov is None:
+        return None
+    if isinstance(reference_cov, str):
+        return reference_cov
+    return np.asarray(reference_cov, dtype=np.float64)
+
+
 def _compute_leadfield_refcov(ch_names: "list[str] | tuple[str, ...]") -> np.ndarray:
     """Build a leadfield-based reference covariance from MNE fsaverage forward model.
 
@@ -227,6 +236,14 @@ def _compute_leadfield_refcov(ch_names: "list[str] | tuple[str, ...]") -> np.nda
     for the given EEG channel montage. This is the canonical GEDAI reference
     covariance — physics-based, label-agnostic, and reproducible across studies.
     """
+    project_root = Path(__file__).resolve().parents[2]
+    mne_home = project_root / ".mne_home"
+    mne_data = mne_home / "MNE-data"
+    mne_home.mkdir(parents=True, exist_ok=True)
+    mne_data.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MNE_DONTWRITE_HOME", "true")
+    os.environ.setdefault("MNE_DATA", str(mne_data))
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/mplconfig")
     import mne
 
     key = tuple(ch_names)
@@ -234,7 +251,6 @@ def _compute_leadfield_refcov(ch_names: "list[str] | tuple[str, ...]") -> np.nda
         return _LEADFIELD_REFCOV_CACHE[key]
 
     fs_dir = mne.datasets.fetch_fsaverage(verbose=False)
-    import os
     subjects_dir = os.path.dirname(fs_dir)
     subject = "fsaverage"
     trans = "fsaverage"
@@ -812,6 +828,7 @@ def apply_gedai(
     reference_cov: np.ndarray | None = None,
     average_reference_baseline: bool = False,
     gedai_duration: float = 1.0,
+    epoch_size_in_cycles: float | None = None,
     highpass_cutoff: float | None = 0.1,
     threshold_relaxation_scales: Tuple[float, ...] = (),
 ) -> np.ndarray:
@@ -915,6 +932,9 @@ def apply_gedai(
         gedai_broad = Gedai(
             wavelet_type="haar",
             wavelet_level=0,
+            # Adaptive epoching is only valid for the spectral / per-band path.
+            # The broadband pass must stay fixed-duration.
+            epoch_size_in_cycles=None,
             highpass_cutoff=highpass_cutoff,
         )
         broad_nm = (
@@ -929,7 +949,7 @@ def apply_gedai(
         )
         fit_kwargs = dict(noise_multiplier=broad_nm, n_jobs=n_jobs, verbose=False)
         if reference_cov is not None:
-            fit_kwargs["reference_cov"] = np.asarray(reference_cov, dtype=np.float64)
+            fit_kwargs["reference_cov"] = _reference_cov_arg(reference_cov)
         gedai_broad.fit_raw(raw, duration=float(gedai_duration), overlap=0.5, **fit_kwargs)
         raw_broad_clean = gedai_broad.transform_raw(
             raw,
@@ -949,11 +969,12 @@ def apply_gedai(
                 wavelet_type="haar",
                 wavelet_level=GEDAI_SPECTRAL_WAVELET_LEVEL,
                 wavelet_low_cutoff=GEDAI_SPECTRAL_LOW_CUTOFF,
+                epoch_size_in_cycles=epoch_size_in_cycles,
                 highpass_cutoff=highpass_cutoff,
             )
             fit_kwargs = dict(noise_multiplier=spec_nm, n_jobs=n_jobs, verbose=False)
             if reference_cov is not None:
-                fit_kwargs["reference_cov"] = np.asarray(reference_cov, dtype=np.float64)
+                fit_kwargs["reference_cov"] = _reference_cov_arg(reference_cov)
             gedai_spectral.fit_raw(
                 raw_broad_clean,
                 duration=float(gedai_duration),
@@ -1029,7 +1050,7 @@ def apply_gedai(
                 )
                 relax_kwargs = dict(noise_multiplier=broad_nm, n_jobs=n_jobs, verbose=False)
                 if reference_cov is not None:
-                    relax_kwargs["reference_cov"] = np.asarray(reference_cov, dtype=np.float64)
+                    relax_kwargs["reference_cov"] = _reference_cov_arg(reference_cov)
                 g_relax.fit_raw(
                     raw_relax,
                     duration=float(gedai_duration),
@@ -1116,7 +1137,7 @@ def apply_gedai(
                     "n_jobs": n_jobs,
                     "verbose": False,
                     **(
-                        {"reference_cov": np.asarray(reference_cov, dtype=np.float64)}
+                        {"reference_cov": _reference_cov_arg(reference_cov)}
                         if reference_cov is not None
                         else {}
                     ),
@@ -1145,7 +1166,7 @@ def apply_gedai(
                         "n_jobs": n_jobs,
                         "verbose": False,
                         **(
-                            {"reference_cov": np.asarray(reference_cov, dtype=np.float64)}
+                            {"reference_cov": _reference_cov_arg(reference_cov)}
                             if reference_cov is not None
                             else {}
                         ),
@@ -2346,6 +2367,11 @@ def preprocess_subject_data(
     anti_laplacian_n_neighbors: int = 4,
     aasd_use_leadfield_refcov: bool = False,
     aasd_gedai_duration_s: float = 8.0,
+    aasd_broadband_noise_multiplier: float = 2.0,
+    aasd_spectral_noise_multiplier: float = 2.0,
+    aasd_resample_hz: float = 0.0,
+    aasd_adaptive_epoching: bool = False,
+    aasd_epoch_size_in_cycles: float = 12.0,
     aasd_two_pass_refcov: bool = False,
 ) -> np.ndarray:
     """Preprocess one subject once per denoising pipeline.
@@ -2573,6 +2599,17 @@ def preprocess_subject_data(
         X_trials, y_trials, win_per_trial = _aasd_reconstruct_trials_from_windows(
             X, y, sfreq=float(sfreq), trial_duration_s=60.0
         )
+        sfreq_gedai = float(aasd_resample_hz) if float(aasd_resample_hz) > 0 else float(sfreq)
+        if abs(sfreq_gedai - float(sfreq)) >= 1.0:
+            from ..data.prepare_aasd import _resample as _aasd_resample
+            X_trials_gedai = _aasd_resample(
+                X_trials.astype(np.float32, copy=False),
+                float(sfreq),
+                float(sfreq_gedai),
+                list(ch_names),
+            ).astype(np.float32, copy=False)
+        else:
+            X_trials_gedai = X_trials
         # Keep the old alpha-tuned behavior for the original 8-12 Hz AASD story,
         # but switch to a much safer broadband mode for paper-style decoding.
         # The paper-style run uses 0.1-45 Hz and a Transformer; the old alpha path
@@ -2580,7 +2617,7 @@ def preprocess_subject_data(
         # caused the heavy over-removal in smoke tests.
         is_alpha_only_aasd = float(l_freq) >= 7.5 and float(h_freq) <= 12.5
         refcov_input = (
-            X_trials if is_alpha_only_aasd else _average_reference_trials(X_trials)
+            X_trials_gedai if is_alpha_only_aasd else _average_reference_trials(X_trials_gedai)
         )
         # Leakage-safe option: when train_idx is provided (window-level indices),
         # restrict the refcov fit to those trials whose windows are all in train.
@@ -2613,28 +2650,31 @@ def preprocess_subject_data(
                     RuntimeWarning,
                 )
         if aasd_use_leadfield_refcov:
-            refcov = _compute_leadfield_refcov(ch_names)
+            refcov = "leadfield"
         elif aasd_two_pass_refcov:
             # Two-pass: pass 1 cleans training trials with leadfield refcov,
             # then build CSP-discriminative refcov from cleaned data (no chicken-and-egg).
-            leadfield_refcov = _compute_leadfield_refcov(ch_names)
+            leadfield_refcov = "leadfield"
             pass1_kwargs = dict(
                 include_subband_guards=True,
-                broadband_noise_multiplier=2.0,
-                spectral_noise_multiplier=2.0,
-                use_spectral_step=False,
+                broadband_noise_multiplier=float(aasd_broadband_noise_multiplier),
+                spectral_noise_multiplier=float(aasd_spectral_noise_multiplier),
+                use_spectral_step=bool(aasd_adaptive_epoching),
                 retention_median_min=0.60,
                 retention_hard_min=0.50,
                 reference_cov=leadfield_refcov,
                 average_reference_baseline=True,
                 gedai_duration=float(aasd_gedai_duration_s),
+                epoch_size_in_cycles=(
+                    float(aasd_epoch_size_in_cycles) if aasd_adaptive_epoching else None
+                ),
                 highpass_cutoff=None,
                 threshold_relaxation_scales=(1.25, 1.5, 2.0, 3.0),
             )
             try:
                 refcov_X_clean = apply_gedai(
                     refcov_X.astype(np.float32, copy=False),
-                    sfreq,
+                    sfreq_gedai,
                     ch_names,
                     l_freq,
                     h_freq,
@@ -2662,26 +2702,29 @@ def preprocess_subject_data(
         else:
             # Broadband paper-style mode:
             # - lower noise multipliers
-            # - skip spectral refinement (too aggressive in smoke tests)
+            # - optionally enable spectral + adaptive epoching when requested
             # - keep alpha/beta guards enabled
             # - use real fallback thresholds so baseline is preserved if GEDAI
             #   destroys the physiologically meaningful content
             gedai_kwargs = dict(
                 include_subband_guards=True,
-                broadband_noise_multiplier=2.0,
-                spectral_noise_multiplier=2.0,
-                use_spectral_step=False,
+                broadband_noise_multiplier=float(aasd_broadband_noise_multiplier),
+                spectral_noise_multiplier=float(aasd_spectral_noise_multiplier),
+                use_spectral_step=bool(aasd_adaptive_epoching),
                 retention_median_min=0.60,
                 retention_hard_min=0.50,
                 reference_cov=refcov,
                 average_reference_baseline=True,
                 gedai_duration=float(aasd_gedai_duration_s),
+                epoch_size_in_cycles=(
+                    float(aasd_epoch_size_in_cycles) if aasd_adaptive_epoching else None
+                ),
                 highpass_cutoff=None,
                 threshold_relaxation_scales=(1.25, 1.5, 2.0, 3.0),
             )
         X_trials_clean = apply_gedai(
-            X_trials,
-            sfreq,
+            X_trials_gedai,
+            sfreq_gedai,
             ch_names,
             l_freq,
             h_freq,
@@ -2689,6 +2732,14 @@ def preprocess_subject_data(
             bridge_samples=0,
             **gedai_kwargs,
         ).astype(np.float32, copy=False)
+        if abs(sfreq_gedai - float(sfreq)) >= 1.0:
+            from ..data.prepare_aasd import _resample as _aasd_resample
+            X_trials_clean = _aasd_resample(
+                X_trials_clean,
+                float(sfreq_gedai),
+                float(sfreq),
+                list(ch_names),
+            ).astype(np.float32, copy=False)
         Xw, yw = _aasd_window_trials_back(X_trials_clean, y_trials, win_per_trial)
         if Xw.shape[0] != X.shape[0]:
             raise ValueError(

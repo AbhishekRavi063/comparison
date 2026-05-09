@@ -40,6 +40,7 @@ test_*.py
 .idea/
 .vscode/
 .gemini/
+.claude/
 .mne_home/
 .mplconfig/
 .home/
@@ -54,6 +55,7 @@ GEDAI_Subject2_Analysis_Package.zip
 memory_audit.md
 PROJECT_SPEC_STATUS.md
 MEMORY_AUDIT.md
+config/config_aasd_task_adaptive_nm3_full18sub_both.yml
 
 # Leadfield restoration for Ultra-Lean Windows survival
 !*/gedai/data/*.mat
